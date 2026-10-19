@@ -113,7 +113,7 @@ class SubprocessRunner:
                 state.log_lines.append(line)
                 if self._on_line:
                     self._on_line(line)
-                event = parser.parse_line(line)
+                event = parser.parse_line(line) if parser is not None else None
                 if event:
                     state.events.append(event)
                     if event.event_type == "rebench_report":

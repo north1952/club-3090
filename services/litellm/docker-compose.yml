@@ -1,6 +1,6 @@
 services:
   litellm:
-    image: ghcr.io/berriai/litellm:v1.100.3
+    image: ghcr.io/berriai/litellm:v1.105.1
     container_name: litellm
     restart: unless-stopped
     ports:
@@ -28,6 +28,11 @@ services:
       # Bare pass-through: `- LITELLM_LOG=${LITELLM_LOG:-}` would set it to the EMPTY
       # string instead of leaving it unset. Toggle with scripts/litellm-log.sh on|off.
       - LITELLM_LOG
+      # 2026-10-18: per-request spend logs + Admin UI data (needs litellm-db below).
+      # litellm-db is NOT published to the host - only reachable inside this
+      # compose network - so a fixed password here is low-risk. Do not export
+      # this file or copy this line anywhere public.
+      - DATABASE_URL=postgresql://litellm:litellm-db-2026-10@litellm-db:5432/litellm
     # Keys for this rig's own routes (litellm/config.local.yaml in your club-3090
     # config dir, e.g. a cloud endpoint's `api_key: os.environ/MY_KEY`), saved in
     # ~/.config/club-3090/secrets.env: `bash scripts/settings.sh set MY_KEY=…`.
@@ -53,3 +58,18 @@ services:
       options:
         max-size: "50m"
         max-file: "3"
+
+  # 2026-10-18: Postgres backing the Admin UI (spend logs, virtual keys, models).
+  # Shares this compose project network -> litellm reaches it as litellm-db:5432.
+  litellm-db:
+    image: postgres:16
+    container_name: litellm-db
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=litellm
+      - POSTGRES_PASSWORD=litellm-db-2026-10
+      - POSTGRES_DB=litellm
+    volumes:
+      - litellm-pgdata:/var/lib/postgresql/data
+volumes:
+  litellm-pgdata:

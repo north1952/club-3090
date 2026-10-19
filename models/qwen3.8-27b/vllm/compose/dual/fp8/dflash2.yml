@@ -220,7 +220,7 @@ services:
       # The plugin registers its FP8 extension through the FLASH_ATTN API.
       - FLASH_ATTN
       - --limit-mm-per-prompt
-      - '{"image":1,"video":0}'
+      - '{"image":999,"video":0}'
       - --mm-processor-kwargs
       - '{"size":{"longest_edge":4194304,"shortest_edge":65536}}'
       - --compilation-config
