@@ -144,16 +144,25 @@ def pack(links: list[Path], d: Path, repack: bool) -> Path:
     return p
 
 
+def engine() -> Path:
+    """The image's engine: build/maya from Maya v1.1.16 on (that release renamed its programs), build/strata before.
+    With neither present (the config rendered outside the image, as the tests do) it names build/maya."""
+    for name in ("maya", "strata"):
+        if (MAYA / "build" / name).is_file():
+            return MAYA / "build" / name
+    return MAYA / "build" / "maya"
+
+
 def config(tag: str, d: Path, p: Path, a) -> Path:
     gpus = [int(g) for g in a.gpus.split(",") if g.strip() != ""]
     keys, sampling, args, notes = maya_settings.settings()   # checked once already at the start of main()
     cfg = {
-        "exe": str(MAYA / "build/strata"),
+        "exe": str(engine()),
         "args": ["--glm-pack", str(p), "--max-context", str(a.context), "--prefill", "auto",
                  "--kv-streaming", "on", "--expert-profile", str(MAYA / "data/expert-profile-glm.bin")],
         "cwd": str(MAYA),
         "tokenizer": str(p / "tokenizer"),
-        "model_name": "glm-5.3-flash",
+        "model_name": "glm-5.3-flash",               # SERVED_NAME replaces it (maya_settings.py)
         "gpu": gpus,
         # GLM-5.3's vendor sampling (1.0 / 0.95, as Maya's setup writes it) unless TEMP / TOP_P / ... say otherwise
         "sampling": sampling,

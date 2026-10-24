@@ -808,11 +808,12 @@ preflight_repo_drift() {
   return 0
 }
 
-# preflight_hf_token — verify HF_TOKEN is set; warn if not.
+# preflight_hf_token — note when HF_TOKEN is not set.
 #
-# Soft warning (returns 0) — Qwen3.6-27B is T&C-gated on HuggingFace, so
-# missing HF_TOKEN will cause `hf download` to fail with a generic error
-# later. Surfacing the issue early saves a round-trip.
+# Soft (returns 0). Most repos the catalog downloads are public and need no
+# token; a gated one (its Hugging Face page asks you to accept terms) fails
+# with a 401 without it. Name no model here: the old text said Qwen3.6-27B was
+# gated and linked Qwen3-Next-80B, neither true nor in the catalog (#1742).
 #
 # Skip via: PREFLIGHT_NO_HF_TOKEN=1
 preflight_hf_token() {
@@ -820,12 +821,10 @@ preflight_hf_token() {
     return 0
   fi
   if [[ -z "${HF_TOKEN:-}" ]]; then
-    echo "[preflight] WARNING: HF_TOKEN is not set in the environment." >&2
-    echo "[preflight]          Qwen3.6-27B is T&C-gated on HuggingFace; downloads will fail without a token." >&2
-    echo "[preflight]          Fix: visit https://huggingface.co/settings/tokens, create a read token," >&2
-    echo "[preflight]               accept the model T&C at https://huggingface.co/Qwen/Qwen3-Next-80B-A3B-Instruct" >&2
-    echo "[preflight]               (and any other Qwen3-Next variant you'll use)," >&2
-    echo "[preflight]               then save it: bash scripts/settings.sh set HF_TOKEN=hf_...   (goes to secrets.env, 0600)" >&2
+    echo "[preflight] note: HF_TOKEN is not set. Public repos download without it." >&2
+    echo "[preflight]       A gated repo (its Hugging Face page asks you to accept terms) needs one:" >&2
+    echo "[preflight]       accept the terms on that page, create a read token at https://huggingface.co/settings/tokens," >&2
+    echo "[preflight]       then save it: bash scripts/settings.sh set HF_TOKEN=hf_...   (goes to secrets.env, 0600)" >&2
     return 0
   fi
   # Sanity check token format — HF tokens start with hf_ and are 30+ chars
@@ -1038,12 +1037,28 @@ _preflight_weights_reader() {
 
 _preflight_weight_recipe_for_path() {
   local rel="$1"
+  local model_hint="${2:-}"
   local reader env_lines
   reader="$(_preflight_weights_reader)"
   command -v python3 >/dev/null 2>&1 || return 1
   [[ -f "$reader" ]] || return 1
-  env_lines="$(python3 "$reader" lookup "$rel" 2>/dev/null)" || return 1
+  env_lines="$(python3 "$reader" lookup "$rel" ${model_hint:+--model "$model_hint"} 2>/dev/null)" || return 1
   eval "$env_lines"
+}
+
+# _preflight_compose_model_hint <compose_file> — the model a compose belongs to, from
+# its models/<id>/<engine>/compose/ path (or a local layer's composes/<id>/). Empty when
+# the path says nothing. It only breaks ties between models that declare the same
+# weights dir: the DFlash2 drafter is an entry of both qwen3.8-27b and
+# thinkingcap-qwen3.8-27b, and without it a Qwen3.8-27B slug fetched through
+# ThinkingCap's setup (#1742).
+_preflight_compose_model_hint() {
+  local compose_file="$1"
+  if [[ "$compose_file" =~ (^|/)models/([^/]+)/[^/]+/compose/ ]]; then
+    printf '%s' "${BASH_REMATCH[2]}"
+  elif [[ "$compose_file" =~ (^|/)profiles-local/composes/([^/]+)/ ]]; then
+    printf '%s' "${BASH_REMATCH[2]}"
+  fi
 }
 
 _preflight_weight_recipe_for_key() {
@@ -1083,13 +1098,14 @@ _preflight_weight_setup_command() {
 
 _preflight_weight_hint_keys() {
   local model_dir="$1"
-  shift
+  local model_hint="$2"
+  shift 2
   local item rel key
   local keys=()
 
   for item in "$@"; do
     rel="$(_preflight_missing_rel "$model_dir" "$item")"
-    if _preflight_weight_recipe_for_path "$rel"; then
+    if _preflight_weight_recipe_for_path "$rel" "$model_hint"; then
       key="$WEIGHT_KEY"
       if ! _preflight_list_has "$key" "${keys[@]}"; then
         keys+=("$key")
@@ -1101,7 +1117,8 @@ _preflight_weight_hint_keys() {
 
 _preflight_print_weight_hints() {
   local model_dir="$1"
-  shift
+  local model_hint="$2"
+  shift 2
   local key any_hint=0 setup_cmd hf_cmd
 
   echo "[preflight]   If weights are already elsewhere, export MODEL_DIR=/path/to/models and retry." >&2
@@ -1131,17 +1148,21 @@ _preflight_print_weight_hints() {
         echo "[preflight]     note: ${_wmn}" >&2
         unset _wmn
     fi
-  done < <(_preflight_weight_hint_keys "$model_dir" "$@")
+  done < <(_preflight_weight_hint_keys "$model_dir" "$model_hint" "$@")
 
   if [[ "$any_hint" != "1" ]]; then
     echo "[preflight]   Check the compose header for its model-specific hf download command." >&2
   fi
 }
 
+# Returns 0 when it fetched and the re-check passed, 2 when it fetched and the re-check
+# still failed (that check has printed its own ERROR, Fix and Skip lines, so the caller
+# adds nothing), and 1 when it offered nothing or the user declined.
 _preflight_offer_fetch_missing() {
   local compose_file="$1"
   local model_dir="$2"
-  shift 2
+  local model_hint="$3"
+  shift 3
 
   [[ "${PREFLIGHT_NO_FETCH_PROMPT:-0}" != "1" ]] || return 1
   [[ -t 0 && -t 1 ]] || return 1
@@ -1157,7 +1178,7 @@ _preflight_offer_fetch_missing() {
     if ! _preflight_list_has "$key" "${keys[@]}"; then
       keys+=("$key")
     fi
-  done < <(_preflight_weight_hint_keys "$model_dir" "$@")
+  done < <(_preflight_weight_hint_keys "$model_dir" "$model_hint" "$@")
 
   [[ ${#keys[@]} -gt 0 ]] || return 1
 
@@ -1168,12 +1189,14 @@ _preflight_offer_fetch_missing() {
   root_dir="$(_preflight_setup_root)"
   for key in "${keys[@]}"; do
     _preflight_weight_recipe_for_key "$key" || continue
-    local env_args=("MODEL_DIR=${model_dir}" "WEIGHT_KEY=${key}")
+    # SETUP_FOR_LAUNCH: the launch carries on after this, so setup.sh skips its
+    # "Next — launch it" block, which names the model's default slug, not this one.
+    local env_args=("MODEL_DIR=${model_dir}" "WEIGHT_KEY=${key}" "SETUP_FOR_LAUNCH=1")
     echo "[preflight] fetching ${WEIGHT_LABEL:-$key} ..." >&2
     env "${env_args[@]}" bash "${root_dir}/scripts/setup.sh" "${WEIGHT_SETUP_MODEL}"
   done
 
-  PREFLIGHT_NO_FETCH_PROMPT=1 preflight_compose_deps "$compose_file"
+  PREFLIGHT_NO_FETCH_PROMPT=1 preflight_compose_deps "$compose_file" || return 2
 }
 
 # _preflight_shard_scan <dir> — #1042 weight-shard presence scan.
@@ -1489,10 +1512,13 @@ preflight_compose_deps() {
   fi
 
   echo "[preflight] Fix:" >&2
-  _preflight_print_weight_hints "$model_dir" "${missing[@]}"
-  if _preflight_offer_fetch_missing "$compose_file" "$model_dir" "${missing[@]}"; then
-    return 0
-  fi
+  local model_hint fetch_rc=0
+  model_hint="$(_preflight_compose_model_hint "$compose_file")"
+  _preflight_print_weight_hints "$model_dir" "$model_hint" "${missing[@]}"
+  _preflight_offer_fetch_missing "$compose_file" "$model_dir" "$model_hint" "${missing[@]}" || fetch_rc=$?
+  [[ "$fetch_rc" == "0" ]] && return 0
+  # 2: the re-check after the fetch already printed the Skip line (#1742 printed it twice).
+  [[ "$fetch_rc" == "2" ]] && return 1
   echo "[preflight] Skip this check:  PREFLIGHT_NO_COMPOSE_DEPS=1 bash scripts/switch.sh ..." >&2
   return 1
 }
@@ -1579,7 +1605,20 @@ preflight_kv_format_hint() {
 #                  no local container publishes
 #
 # Skip via: PREFLIGHT_NO_AUTODETECT=1
+#
+# Whichever CONTAINER this settles on (detected, given, or none), the engine's API key, when it
+# has one, is then sent with this shell's curl requests (scripts/lib/engine-auth.sh): Strata 0.2+
+# answers nothing but GET /health without it, and every autodetecting script comes through here.
 preflight_autodetect_endpoint() {
+  _preflight_autodetect_endpoint "$@"
+  local rc=$?
+  [[ "$(type -t club_engine_auth_enable)" == function ]] \
+    || source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/lib/engine-auth.sh"
+  club_engine_auth_enable "${CONTAINER:-}"
+  return "$rc"
+}
+
+_preflight_autodetect_endpoint() {
   if [[ "${PREFLIGHT_NO_AUTODETECT:-0}" == "1" ]]; then
     return 0
   fi

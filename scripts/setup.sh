@@ -54,6 +54,11 @@
 #   WITH_PRISM_EAGLE3   Set to 1 to ALSO download the Prism EAGLE3 drafter when
 #                       the model registers one (setup: prism_eagle3).
 #                       Default: 0.
+#   SETUP_FOR_LAUNCH    Set to 1 by preflight's "fetch missing weights now?" offer,
+#                       which runs in the middle of a switch.sh / launch.sh launch:
+#                       downloads as usual, then exits without the optional-drafter
+#                       notice and the "Next — launch it" block, which name the
+#                       model's default slug rather than the one being launched (#1742).
 #   HF_DOWNLOAD_RETRIES Attempts per repo download before giving up. Default: 4.
 #                       A transfer is resumable, so a retry costs only the
 #                       reconnect; raise it on a flaky link.
@@ -1244,7 +1249,7 @@ if [[ "${WITH_DFLASH_DRAFT:-0}" == "1" ]] && [[ "${SKIP_MODEL:-0}" != "1" ]]; th
       ;;
   esac
   echo ""
-else
+elif [[ "${SETUP_FOR_LAUNCH:-0}" != "1" ]]; then
   echo "[dflash]  Skipping DFlash draft model. Set WITH_DFLASH_DRAFT=1 to fetch it when a matching compose requires it."
 fi
 
@@ -1266,16 +1271,30 @@ fi
 # refactored 2026-05-03 to vendor the two files in-repo, fixing #37.)
 
 
+# Preflight's fetch offer (SETUP_FOR_LAUNCH=1): the launch that called it carries on, so
+# stop before the next steps, which suggest a different slug (#1742).
+if [[ "${SETUP_FOR_LAUNCH:-0}" == "1" ]]; then
+  echo "[setup] ✓ ${WEIGHT_KEY:-${MODEL_NAME}} downloaded; back to the launch."
+  exit 0
+fi
+
 # Per-model "next steps" — different composes / served-model-name / port between
 # models. Derived from the registry (`scripts/lib/registry-emit.sh --json`),
 # replacing the hand-written per-model case whose arms new models silently
 # missed (#914 class).
 #
-# Slug pick (deterministic): the model's curated default slug when it is
-# FUNCTIONAL (status production/caveats — mirror of
-# compose_registry.FUNCTIONAL_STATUSES), else the highest-ranked functional
-# slug, else the highest-ranked slug overall. Non-functional pick ⇒ the launch
-# hint carries --force, exactly like switch.sh's gate.
+# Slug pick (deterministic):
+#   - `setup.sh <slug>`: that slug's own emitted row, any status. Launch
+#     command, container, port, served name, status and compose path all come
+#     from that row. A slug this emit does not contain degrades to the generic
+#     `switch.sh --list` hint — never another engine's default (#1741).
+#   - model-name setup: the model's curated default slug when it is FUNCTIONAL
+#     (status production/caveats — mirror of
+#     compose_registry.FUNCTIONAL_STATUSES), else the highest-ranked functional
+#     slug, else the highest-ranked slug overall.
+# Non-functional pick ⇒ the launch hint carries --force, exactly like
+# switch.sh's gate. That includes an explicitly requested experimental,
+# incubating or deprecated slug.
 #
 # ⚠️ Initialise every SAMPLE_* here regardless of derivation success. If the
 # registry emit fails these must be EMPTY, never wrong — and `set -u` must
@@ -1295,10 +1314,10 @@ _reg_tmp="$(mktemp)"
 # SAMPLE_* block to generic hints (documented above), never a wrong hint.
 bash "${ROOT_DIR}/scripts/lib/registry-emit.sh" --json >"${_reg_tmp}" 2>/dev/null || true
 if [[ -s "${_reg_tmp}" ]]; then
-  eval "$(python3 - "${MODEL_NAME}" "${ROOT_DIR}" "${_reg_tmp}" <<'PY'
+  eval "$(python3 - "${MODEL_NAME}" "${ROOT_DIR}" "${_reg_tmp}" "${SETUP_SLUG}" <<'PY'
 import json, os, re, shlex, sys
 
-model, root, reg_path = sys.argv[1], sys.argv[2], sys.argv[3]
+model, root, reg_path, requested = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
 with open(reg_path, encoding="utf-8") as _fh:
     data = json.load(_fh)
 
@@ -1322,16 +1341,24 @@ def q(v):
 
 
 pick = None
-for slug in defaults:
-    c = [v for v in variants if v.get("slug") == slug]
-    if c and c[0].get("status") in FUNCTIONAL:
-        pick = c[0]
-        break
-if pick is None:
-    pool = [v for v in variants if v.get("status") in FUNCTIONAL] or variants
-    if pool:
-        # sorted() is stable: ties keep registry order.
-        pick = sorted(pool, key=lambda v: RANK.get(v.get("status", ""), 0), reverse=True)[0]
+if requested:
+    # setup.sh <slug>: keep that row, any status. A slug this emit does not
+    # contain degrades to generic list guidance — never another engine (#1741).
+    found = [v for v in variants if v.get("slug") == requested]
+    if not found:
+        raise SystemExit(0)
+    pick = found[0]
+else:
+    for slug in defaults:
+        c = [v for v in variants if v.get("slug") == slug]
+        if c and c[0].get("status") in FUNCTIONAL:
+            pick = c[0]
+            break
+    if pick is None:
+        pool = [v for v in variants if v.get("status") in FUNCTIONAL] or variants
+        if pool:
+            # sorted() is stable: ties keep registry order.
+            pick = sorted(pool, key=lambda v: RANK.get(v.get("status", ""), 0), reverse=True)[0]
 if pick is None:
     raise SystemExit(0)
 
@@ -1387,11 +1414,12 @@ rm -f "${_reg_tmp}"
 echo "[setup] ✓ ${SETUP_MODEL_DISPLAY} downloaded."
 echo "[setup] Next: bash scripts/launch.sh"
 echo ""
-# SAMPLE_LAUNCH_HINT is registry-derived (see the derivation above) and always
-# names a real slug — with --force when the slug's status is non-functional.
-# Only a failed registry emit leaves it empty; that fallback points at
-# switch.sh's list rather than printing a models/<model>/vllm/compose path
-# that may not exist (the #914 class).
+# SAMPLE_LAUNCH_HINT is registry-derived (see the derivation above) and names
+# a real slug — with --force when that slug's status is non-functional.
+# A failed or empty registry emit, or an explicit slug the emit does not
+# contain, leaves it empty; that fallback points at switch.sh's list rather
+# than another engine or a models/<model>/vllm/compose path that may not exist
+# (the #914 class, #1741).
 if [[ -n "${SAMPLE_LAUNCH_HINT:-}" ]]; then
   echo "Next — launch it:"
   echo "  ${SAMPLE_LAUNCH_HINT}"

@@ -51,7 +51,7 @@
 # MAYA_PCIE_SHARE / MAYA_CPU_LANE (the engine's STRATA_GLM_PCIE_SHARE / STRATA_GLM_CPU_LANE).
 services:
   strata-maya:
-    image: ${STRATA_MAYA_IMAGE:-ghcr.io/noonghunna/strata-maya-club3090@sha256:c66808309785b6a4b258b7807a0cbfd352c5f950a354abbfe24f4e9e903d95ef}
+    image: ${STRATA_MAYA_IMAGE:-ghcr.io/noonghunna/strata-maya-club3090@sha256:e14f90aff1fa3982bcd6a99f88e5890d6be412f5475a4a38e48f8984190dcdb4}
     container_name: ${ESTATE_CONTAINER:-strata-maya-glm53-flash-single-maya-l}
     restart: ${CLUB3090_RESTART:-unless-stopped}
     # root, with the launcher's group: what Maya writes to the data volume stays removable by the user
@@ -71,7 +71,7 @@ services:
       MAYA_PCIE_SHARE: "${MAYA_PCIE_SHARE:-}"
       MAYA_CPU_LANE: "${MAYA_CPU_LANE:-}"
       # Maya's server defaults, written into maya.json at every boot by maya_prepare.py
-      # (launcher/maya_settings.py maps each); unset = effort max, sampling 1.0 / 0.95, Maya's 32K budget
+      # (launcher/maya_settings.py maps each); unset = effort max, sampling 1.0 / 0.95, Maya's 32K budget, the name glm-5.3-flash
       REASONING_EFFORT:
       ENABLE_THINKING:
       THINKING_BUDGET:
@@ -82,6 +82,7 @@ services:
       MIN_P:
       PRESENCE_PENALTY:
       REPEAT_PENALTY:
+      SERVED_NAME:
       # the entrypoint passes --host 0.0.0.0 and --port 8080 itself
     volumes:
       - "${MODEL_DIR:-../../../../../../models-cache}/glm-5.3-flash-maya-gguf/Maya-L:/gguf:ro"

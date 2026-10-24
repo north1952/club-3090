@@ -8,8 +8,8 @@
 # maintainer runs this on the reference rig for the release we want (GitHub CI built it until 2026-10-17):
 #
 #   bash models/glm-5.3-flash/strata-maya/image/build.sh                    # newest release: build + check, no push
-#   bash models/glm-5.3-flash/strata-maya/image/build.sh --tag v1.1.11 --push
-#   bash models/glm-5.3-flash/strata-maya/image/build.sh --tag v1.1.11 --verify <image>   # checks only
+#   bash models/glm-5.3-flash/strata-maya/image/build.sh --tag <vX.Y.Z> --push
+#   bash models/glm-5.3-flash/strata-maya/image/build.sh --tag <vX.Y.Z> --verify <image>   # checks only
 #   --jobs N   compile with N jobs (default: half the CPU threads, as maya.py does)
 #
 # Steps; any failure stops the run:
@@ -27,6 +27,8 @@
 #      - serve/server.py and tools/iq_pack.py still offer every flag our launcher passes, and
 #        the expert profile the configs name is there;
 #      - gguf-py imports and the pack builder indexes the release's synthetic GLM-5 model;
+#      - every package in the release's setup.py PY_PACKAGES (less cmake / ninja) is installed in
+#        the .venv at a version it accepts;
 #   5. with --push: push :<tag> and :sha-<commit7>, then print the digest and the facts the pin PR
 #      cites. A push needs a clean recipe folder at a commit on origin/master, checked before
 #      anything else runs (scripts/lib/image-push-guard.sh), so the recipe labels name the code
@@ -114,11 +116,14 @@ PY
   say "check: archs $CUDA_ARCHITECTURES, VERSION $version"
 
   # libcuda / libnvidia-* come from the host driver at run time, so only those may be missing here
-  missing="$("${run[@]}" ldd "$ref" /opt/maya/build/strata | command grep 'not found' \
+  # the engine is build/maya from v1.1.16 on (the release renamed its programs), build/strata before
+  engine="$("${run[@]}" sh "$ref" -c 'for e in /opt/maya/build/maya /opt/maya/build/strata; do [ -x "$e" ] && { echo "$e"; exit 0; }; done; exit 1')" \
+    || die "$ref has no engine at /opt/maya/build/maya or /opt/maya/build/strata"
+  missing="$("${run[@]}" ldd "$ref" "$engine" | command grep 'not found' \
              | command grep -v -E 'libcuda\.so|libnvidia' || true)"
   [[ -z "$missing" ]] || die "libraries missing from the image:
 $missing"
-  say "check: every library resolves except the host driver's"
+  say "check: every library of $engine resolves except the host driver's"
 
   help="$("${run[@]}" /opt/maya/.venv/bin/python "$ref" /opt/maya/serve/server.py --help 2>&1)" \
     || die "serve/server.py --help failed:
@@ -150,6 +155,39 @@ $help"
   [[ "$(tail -1 <<<"$packed")" == ok ]] || die "gguf-py or the pack builder doesn't work in the image:
 $packed"
   say "check: gguf-py imports and the pack builder indexes the release's synthetic GLM-5 model"
+
+  # the release's setup.py, read in the image itself (not the list the Dockerfile recorded), so an image
+  # whose recipe missed a package fails here: v1.1.18's jsonschema, for the Responses API's structured
+  # output, was missing from the hand-kept list the recipe had until then
+  pkgs="$(docker run --rm -i --entrypoint /opt/maya/.venv/bin/python "$ref" - 2>&1 <<'PY'
+import ast, sys
+from importlib import metadata
+from pip._vendor.packaging.requirements import Requirement
+tree = ast.parse(open("/opt/maya/setup.py", encoding="utf-8").read())
+found = [node.value for node in ast.walk(tree) if isinstance(node, ast.Assign)
+         and any(isinstance(t, ast.Name) and t.id == "PY_PACKAGES" for t in node.targets)]
+if len(found) != 1:
+    sys.exit("setup.py has no single PY_PACKAGES list")
+bad, n = [], 0
+for spec in ast.literal_eval(found[0]):
+    req = Requirement(spec)
+    if req.name.lower() in ("cmake", "ninja"):
+        continue
+    n += 1
+    try:
+        version = metadata.version(req.name)
+    except metadata.PackageNotFoundError:
+        bad.append(f"{spec}: not installed")
+        continue
+    if req.specifier and not req.specifier.contains(version, prereleases=True):
+        bad.append(f"{spec}: {version} installed")
+print("\n".join(bad))
+print("ok" if n and not bad else "failed")
+PY
+)" || true
+  [[ "$(tail -1 <<<"$pkgs")" == ok ]] || die "the image's .venv lacks packages the release's setup.py installs:
+$pkgs"
+  say "check: every package in setup.py's PY_PACKAGES (less cmake / ninja) is installed at a version it accepts"
 }
 
 # ── 1. the release and its commit ────────────────────────────────────────────────

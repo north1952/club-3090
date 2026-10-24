@@ -4,7 +4,7 @@
 
 ## What it is
 
-[Project Maya](https://github.com/mw00/project-maya) (MIT, mw00) is a fork of [Strata](https://github.com/Niko1221/Strata) rewritten for one model, Z.ai's GLM-5.3-Flash (320.76B MoE), with its own quants ([peasantsmith/GLM-5.3-Flash-Maya-GGUF](https://huggingface.co/peasantsmith/GLM-5.3-Flash-Maya-GGUF)). It keeps Strata's shape: a C++/CUDA engine (`build/strata`) with ggml's CPU backend as a library, and a Python server (`serve/server.py`) on port 8080 with an OpenAI API (`/v1/chat/completions`), an Anthropic one (`/v1/messages`) and a dashboard.
+[Project Maya](https://github.com/mw00/project-maya) (MIT, mw00) is a fork of [Strata](https://github.com/Niko1221/Strata) rewritten for one model, Z.ai's GLM-5.3-Flash (320.76B MoE), with its own quants ([peasantsmith/GLM-5.3-Flash-Maya-GGUF](https://huggingface.co/peasantsmith/GLM-5.3-Flash-Maya-GGUF)). It keeps Strata's shape: a C++/CUDA engine (`build/maya`; `build/strata` before v1.1.16) with ggml's CPU backend as a library, and a Python server (`serve/server.py`) on port 8080 with an OpenAI API (`/v1/chat/completions`), an Anthropic one (`/v1/messages`) and a dashboard.
 
 Where the experts live:
 - **VRAM:** a per-layer expert pool on each card, filled from a shipped routing profile and promoted as it runs;
@@ -25,10 +25,7 @@ Maya publishes no image, no Dockerfile and no Linux engine: `maya.sh` compiles o
 
 The profile pins a digest, and the launchers inject it as `STRATA_MAYA_IMAGE`. Export `STRATA_MAYA_IMAGE` in the shell to try another build for one launch; a saved value loses to the pin.
 
-**Bumping:** the maintainer publishes a release from the rig with `build.sh --tag <vX.Y.Z> --push` (`:<tag>`, `:sha-<commit>`), but publishing doesn't pin. To move the pin:
-1. boot a dual and a single slug on the new digest through `switch.sh`;
-2. run `verify-full` on each;
-3. run `scripts/engine-pin-bump.sh strata-maya ghcr.io/noonghunna/strata-maya-club3090@sha256:<digest>` and update `lineage.source_ref`.
+**Bumping:** the maintainer publishes a release from the rig with `build.sh --tag <vX.Y.Z> --push` (`:<tag>`, `:sha-<commit>`), but publishing doesn't pin. What moving the pin checks, and when to skip a release: [the bump runbook](../NIGHTLY_BUMP_RUNBOOK.md#strata-and-project-maya-the-bump-rule).
 
 A release that renames a flag the launcher passes (`serve/server.py`, `tools/iq_pack.py`) fails the image build, so the recipe and the launcher move together.
 
@@ -67,6 +64,7 @@ Measurements, with dates and settings, are in each compose's header and in [BENC
   | `THINKING_BUDGET` | `thinking_budget` | tokens, `0` = no budget; one cap for every request. A request's own `max_tokens` lowers it to leave the answer a quarter of that (at least 1,024 tokens) | Maya's own, 32,768 |
   | `TEMP`, `TOP_P`, `TOP_K`, `MIN_P`, `PRESENCE_PENALTY`, `REPEAT_PENALTY` | `sampling.temperature`, `.top_p`, `.top_k`, `.min_p`, `.presence_penalty`, `.repetition_penalty` | ≥ 0 / 0–1 / 1–64 / 0–1 / ≥ 0 / > 0 | temperature 1.0, top_p 0.95 (GLM-5.3's vendor sampling); the rest the engine's |
   | `KV` | `--kv` in the engine args | `fp16`, `int8` (the attention's latent cache in INT8, about half the memory). The engine also parses `q4_0` and `k8v4`, but only for Strata's Qwen path; a GLM pack runs them as `fp16`, so the launcher refuses them | `fp16`, the engine's own |
+  | `SERVED_NAME` | `model_name` | one name, no spaces: the name `/v1/models` reports and every answer carries (Maya answers a request whatever model it names) | `glm-5.3-flash` |
 
   A request's own fields always win over these defaults, and so do the Chat settings saved from Maya's web page (`maya.shared-settings.json` next to the config): they fill effort and sampling before the config does. Two settings don't apply. `SPEC_N`: Maya's `--spec` is documented for its DFlash2 drafter, which the image doesn't carry, not for GLM's MTP block. `MAX_TOKENS`: the server takes a default output cap only from those saved Chat settings; `max_tokens` in `maya.json` is the vision encoder's. A request with no `max_tokens` runs to the end of the context.
 - **Runtime numbers from `/metrics`.** Maya serves Strata's `/metrics` document (its version in `engine.maya_version`), but its draft counts are only in its engine log (`/data/<quant>/maya.log`, "glm spec: N of M drafts accepted"). Given the container, `scripts/lib/strata_metrics.py` sums them, so `health.sh`, `verify-full` (its MTP acceptance check), `bench.sh` and `report.sh` read Maya's drafts the way they read Strata's.
