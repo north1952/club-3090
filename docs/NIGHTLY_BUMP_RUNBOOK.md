@@ -132,6 +132,11 @@ optimization), file an upstream issue and decide if the bump is still worth it.
 
 ### 6. Land the bump
 
+Record the pin in the engine profile, beside `install.spec`: the old `# pin-current:` line becomes the first entry
+of `# pin-earlier:` (it is the rollback), and a new `# pin-current:` says what is pinned now (the release, its source
+commit, the date and what was booted). `docs/UPSTREAM.md`'s Pinned images table says why an image is pinned and
+carries no pin, so leave it; `bash scripts/maintenance/list-image-pins.sh --pins` shows the result.
+
 ```bash
 git add <compose-file>
 git commit -m "bump <compose-name> to <engine>:<new-tag>"
@@ -219,7 +224,8 @@ does, and what to do by hand when it refuses.
    bump's PR.
 2. **In the pin worktree,** pull the image and pin its digest everywhere: `scripts/engine-pin-bump.sh <engine>
    <repo>@sha256:<digest>` (the spec and the compose defaults), `lineage.source_ref`, the engine profile's two `pin-`
-   lines, the engine's `docs/UPSTREAM.md` row and, for Strata, the "Pinned" line of `docs/engines/STRATA.md`. The
+   lines and, for Strata, the "Pinned" line of `docs/engines/STRATA.md`. `docs/UPSTREAM.md` carries no pin, so a
+   bump never edits it. The
    launchers inject the profile's image, so a boot from that worktree runs the new digest. Before that, check in the
    new image what the launchers rely on: for Strata, that `strata launch --kv` still offers `KV_FORMATS`, the `--spec`
    help still says setup writes `SETUP_SPEC` (both in `launcher/strata_config.py`) and the entrypoint still reads the
@@ -283,6 +289,18 @@ does, and what to do by hand when it refuses.
   (`low|medium|xhigh`). Read the commits between the two pins for any of those.
 - Prepare runs at every start and is idempotent: a new image that adds a preparation step applies it in
   place, in the model directory, at the first start after the bump.
+
+### qengine
+
+- Pinned by digest to the author's own `ghcr.io/bpx03/qengine:<release>` (text only; the `:vision` tags add PyTorch).
+  Each image's `org.opencontainers.image.revision` label is its source commit, which `lineage.source_ref` records.
+  Registered with no slug yet (2026-10-27): until one exists a bump is only `scripts/engine-pin-bump.sh qengine
+  ghcr.io/bpx03/qengine@sha256:<digest>` and `source_ref`; from the first slug on, boot it on the new digest and run
+  `verify-full` first.
+- The volatile parts are QEngine's own interfaces: the image's entrypoint and its `QE_*` variables (`QE_GPUS`,
+  `QE_MAX_SEQS`, `QE_RESERVE_GB`, `QE_EXTRA_ARGS`), `server/app.py`'s flags, the model directory it expects
+  (`Qwen3.8-27B-INT4`, RedHatAI's layout, plus the `token_rank.bin` and `model_mtp_ft.safetensors` release assets),
+  and `/v1/models` `owned_by: "qengine"`, which engine-kind.sh reads. ⚠️ PolyForm Noncommercial license.
 
 ### Luce DFlash / xtransformers / future engines
 
