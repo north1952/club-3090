@@ -65,7 +65,8 @@ detected at boot, so you don't choose a compose for it.
 |  | `vllm/qwen-35b-a3b-dual-nvfp4-fast` | ⚠️ caveats | 262144 | [dual/nvfp4-fast/fp8.yml](../models/qwen3.6-35b-a3b/vllm/compose/dual/nvfp4-fast/fp8.yml) | [#608](https://github.com/noonghunna/club-3090/discussions/608) | needs sm 9.0+ (not a 3090) |
 |  | `llamacpp/hauhaucs-35ba3b-dual` | 🧪 experimental | 262144 | [dual/morikomorizz-q6kp/mtp.yml](../models/qwen3.6-35b-a3b/llama-cpp/compose/dual/morikomorizz-q6kp/mtp.yml) | [#411](https://github.com/noonghunna/club-3090/discussions/411) |  |
 |  | `vllm/qwen-35b-a3b-dual-nvfp4` | 🧪 experimental | 262144 | [dual/nvfp4/fp8.yml](../models/qwen3.6-35b-a3b/vllm/compose/dual/nvfp4/fp8.yml) | [#608](https://github.com/noonghunna/club-3090/discussions/608) | needs sm 9.0+ (not a 3090) |
-| **Qwen 3.8 27B** | `llamacpp/qwen38-27b-dual-q8kxl` | 🧪 experimental | 262144 | [dual/unsloth-q8kxl/q8kv.yml](../models/qwen3.8-27b/llama-cpp/compose/dual/unsloth-q8kxl/q8kv.yml) | [#993](https://github.com/noonghunna/club-3090/discussions/993) |  |
+| **Qwen 3.8 27B** | `qengine/qwen38-27b-dual` | ⚠️ caveats | 262144 | [dual/redhat-int4/mtp.yml](../models/qwen3.8-27b/qengine/compose/dual/redhat-int4/mtp.yml) | — |  |
+|  | `llamacpp/qwen38-27b-dual-q8kxl` | 🧪 experimental | 262144 | [dual/unsloth-q8kxl/q8kv.yml](../models/qwen3.8-27b/llama-cpp/compose/dual/unsloth-q8kxl/q8kv.yml) | [#993](https://github.com/noonghunna/club-3090/discussions/993) |  |
 |  | `sgl/qwen38-27b-dual-fast` | 🧪 experimental | 262144 | [dual/autoround-int4/mtp.yml](../models/qwen3.8-27b/sglang/compose/dual/autoround-int4/mtp.yml) | [#1245](https://github.com/noonghunna/club-3090/discussions/1245) |  |
 |  | `sgl/qwen38-27b-dual-max` | 🧪 experimental | 163840 | [dual/fp8/mtp.yml](../models/qwen3.8-27b/sglang/compose/dual/fp8/mtp.yml) | [#1245](https://github.com/noonghunna/club-3090/discussions/1245) |  |
 |  | `sgl/qwen38-27b-dual-superfast` | 🧪 experimental | 262144 | [dual/autoround-int4/dflash2.yml](../models/qwen3.8-27b/sglang/compose/dual/autoround-int4/dflash2.yml) | [#1245](https://github.com/noonghunna/club-3090/discussions/1245) |  |
@@ -83,8 +84,9 @@ detected at boot, so you don't choose a compose for it.
 |  | `bucko-vllm/qwen3.8-flash-next-swift15-dual` | 🐣 incubating | 262144 | [dual/ukisai-swift15-autoround-int4/base.yml](../models/qwen3.8-flash-next/bucko-vllm/compose/dual/ukisai-swift15-autoround-int4/base.yml) | [#1700](https://github.com/noonghunna/club-3090/discussions/1700) | host RAM ≥ 170 GB |
 |  | `exllamav3/qwen38-flash-next-dual-exl3-305-cpumoe` | 🐣 incubating | 204800 | [dual/exl3-3.05bpw/cpumoe.yml](../models/qwen3.8-flash-next/exllamav3/compose/dual/exl3-3.05bpw/cpumoe.yml) | [#1700](https://github.com/noonghunna/club-3090/discussions/1700) | host RAM ≥ 96 GB |
 |  | `exllamav3/qwen38-flash-next-dual-exl3-405-cpumoe` | 🐣 incubating | 204800 | [dual/exl3-4.05bpw/cpumoe.yml](../models/qwen3.8-flash-next/exllamav3/compose/dual/exl3-4.05bpw/cpumoe.yml) | [#1700](https://github.com/noonghunna/club-3090/discussions/1700) | host RAM ≥ 118 GB |
-|  | `strata/qwen3.8-flash-next-iq3s-dual` | 🐣 incubating | 131072 | [dual/ista-iq3s/base.yml](../models/qwen3.8-flash-next/strata/compose/dual/ista-iq3s/base.yml) | [#1700](https://github.com/noonghunna/club-3090/discussions/1700) | host RAM ≥ 84 GB |
-|  | `strata/qwen3.8-flash-next-swift15-abliterated-iq3s-dual` | 🐣 incubating | 131072 | [dual/sc117-swift15-abliterated-iq3s/base.yml](../models/qwen3.8-flash-next/strata/compose/dual/sc117-swift15-abliterated-iq3s/base.yml) | [#1700](https://github.com/noonghunna/club-3090/discussions/1700) | host RAM ≥ 84 GB |
+|  | `qengine/qwen38-flash-next-dual` | 🐣 incubating | 262144 | [dual/qengine-int4/mtp.yml](../models/qwen3.8-flash-next/qengine/compose/dual/qengine-int4/mtp.yml) | — | host RAM ≥ 88 GB |
+|  | `strata/qwen3.8-flash-next-iq3s-dual` | 🐣 incubating | 131072 | [dual/ista-iq3s/base.yml](../models/qwen3.8-flash-next/strata/compose/dual/ista-iq3s/base.yml) | [#1700](https://github.com/noonghunna/club-3090/discussions/1700) | host RAM ≥ 93 GB |
+|  | `strata/qwen3.8-flash-next-swift15-abliterated-iq3s-dual` | 🐣 incubating | 131072 | [dual/sc117-swift15-abliterated-iq3s/base.yml](../models/qwen3.8-flash-next/strata/compose/dual/sc117-swift15-abliterated-iq3s/base.yml) | [#1700](https://github.com/noonghunna/club-3090/discussions/1700) | host RAM ≥ 93 GB |
 | **ThinkingCap Qwen3.6-27B** | `vllm/thinkingcap-dual-w4a8` ⭐ | ⚠️ caveats | 262144 | [dual/w4a16/w4a8.yml](../models/thinkingcap-27b/vllm/compose/dual/w4a16/w4a8.yml) | [#749](https://github.com/noonghunna/club-3090/discussions/749) |  |
 | **ThinkingCap Qwen3.8-27B** | `sgl/thinkingcap38-27b-dual-fast` | 🧪 experimental | 262144 | [dual/autoround-int4/mtp.yml](../models/thinkingcap-qwen3.8-27b/sglang/compose/dual/autoround-int4/mtp.yml) | [#1418](https://github.com/noonghunna/club-3090/discussions/1418) |  |
 |  | `sgl/thinkingcap38-27b-dual-max` | 🧪 experimental | 163840 | [dual/fp8/mtp.yml](../models/thinkingcap-qwen3.8-27b/sglang/compose/dual/fp8/mtp.yml) | [#1418](https://github.com/noonghunna/club-3090/discussions/1418) |  |
@@ -96,7 +98,7 @@ detected at boot, so you don't choose a compose for it.
 |  | `vllm/thinkingcap38-27b-dual-ultrafast` | 🧪 experimental | 262144 | [dual/autoround-int4/dflash2.yml](../models/thinkingcap-qwen3.8-27b/vllm/compose/dual/autoround-int4/dflash2.yml) | [#1418](https://github.com/noonghunna/club-3090/discussions/1418) |  |
 |  | `vllm/thinkingcap38-27b-dual-ultramax` | 🧪 experimental | 262144 | [dual/fp8/dflash2.yml](../models/thinkingcap-qwen3.8-27b/vllm/compose/dual/fp8/dflash2.yml) | [#1418](https://github.com/noonghunna/club-3090/discussions/1418) |  |
 
-63 slugs. ⭐ = the model's default for this topology (`bash scripts/switch.sh <model>/default`). Generated from the registry by `tools/docs/slug_tables.py`; don't edit by hand.
+65 slugs. ⭐ = the model's default for this topology (`bash scripts/switch.sh <model>/default`). Generated from the registry by `tools/docs/slug_tables.py`; don't edit by hand.
 <!-- END GENERATED: slug-table dual -->
 
 ## Launch

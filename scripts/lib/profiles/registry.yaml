@@ -2663,7 +2663,7 @@ entries:
     default_port: 8122
     kvcalc_key: SKIP
     status: experimental
-    status_note: "🧪 Validated 2026-08-29 on llamacpp-club3090-v1.5 (rc0): verify-full 10/10 (the MTP check skips -- it is vLLM-log-format-specific), bench-agentic 2x12 turns to 35,254 prompt tok with TTFT growing 8.0x against 25.1x context (SUB-LINEAR) and decode 27.7-44 TPS with no cliff in the 21-26K band, vision 4/4 on ground truth. bench.sh canonical: decode 39.28 narrative (CV 0.8%) / 38.57 code (CV 1.8%), prefill 749.09@10K (CV 0.2%), TTFT ~415 ms -- the FASTEST model on this stack as of this date, and the reason is expert BYTE-SIZE (1,638,400 weights per ffn_up vs GLM's 8,388,608), not the quant. Expert pool 9,435 slots (CUDA0 q4_K 3,044 + q5_1 1,490 + q8_0 128; CUDA1 q4_K 2,955 + q5_1 1,329 + q8_0 305 + q5_K 184) at MOE_RESERVE_MB=1536 -- read at LLAMA_ARG_LOG_VERBOSITY=4 and SUMMED per device; this quant makes 3-4 pools PER CARD and one pool's used=N/N under-reports badly. ⭐ Projector ships on the HOST (-mmdev none, default since 2026-08-29): on CUDA0 it cost 1,114 MiB and is allocated AFTER the pool is sized, leaving only 830 MiB headroom with a drafter active -- a latent OOM on the first image request. Host placement costs ZERO cache slots (9,435 either way) and GPU1 was byte-identical across the A/B. ⛔ NO DRAFTER EXISTS: no MTP head in the GGUF (nextn_predict_layers ABSENT, verified) and no external drafter for qwen4exp; engine support is an OPEN DRAFT PR (ggml-org/llama.cpp#27836). n-gram drafting needs no drafter file and IS available: ngram-mod at n_max=8 measured +64% on REPEATED context but -1.3% (noise) on held-out prompts -- the gain is cache-residency dependent, not acceptance dependent, so it is NOT enabled by default. ⛔ Its DEFAULTS are harmful (n_max=64 measured -7.6%) and --spec-draft-n-max binds NONE of the ngram types. ⚠️ Ships 204800, NOT the declared 262144 -- that boots but collapses the pool to 802/1,026 MiB. ⚠️ QUALITY UNTESTED -- no 8-pack has been run on this model."
+    status_note: "🧪 Validated 2026-08-29 on llamacpp-club3090-v1.5 (rc0): verify-full 10/10 (the MTP check skipped then, as vLLM-log-format-specific; since 2026-10-15 it checks the ngram-mod drafter), bench-agentic 2x12 turns to 35,254 prompt tok with TTFT growing 8.0x against 25.1x context (SUB-LINEAR) and decode 27.7-44 TPS with no cliff in the 21-26K band, vision 4/4 on ground truth. bench.sh canonical: decode 39.28 narrative (CV 0.8%) / 38.57 code (CV 1.8%), prefill 749.09@10K (CV 0.2%), TTFT ~415 ms -- the FASTEST model on this stack as of this date, and the reason is expert BYTE-SIZE (1,638,400 weights per ffn_up vs GLM's 8,388,608), not the quant. Expert pool 9,435 slots (CUDA0 q4_K 3,044 + q5_1 1,490 + q8_0 128; CUDA1 q4_K 2,955 + q5_1 1,329 + q8_0 305 + q5_K 184) at MOE_RESERVE_MB=1536 -- read at LLAMA_ARG_LOG_VERBOSITY=4 and SUMMED per device; this quant makes 3-4 pools PER CARD and one pool's used=N/N under-reports badly. ⭐ Projector ships on the HOST (-mmdev none, default since 2026-08-29): on CUDA0 it cost 1,114 MiB and is allocated AFTER the pool is sized, leaving only 830 MiB headroom with a drafter active -- a latent OOM on the first image request. Host placement costs ZERO cache slots (9,435 either way) and GPU1 was byte-identical across the A/B. ⛔ NO DRAFTER EXISTS: no MTP head in the GGUF (nextn_predict_layers ABSENT, verified) and no external drafter for qwen4exp; engine support is an OPEN DRAFT PR (ggml-org/llama.cpp#27836). n-gram drafting needs no drafter file and IS available: ngram-mod at n_max=8 measured +64% on REPEATED context but -1.3% (noise) on held-out prompts -- the gain is cache-residency dependent, not acceptance dependent, so it is NOT enabled by default. ⛔ Its DEFAULTS are harmful (n_max=64 measured -7.6%) and --spec-draft-n-max binds NONE of the ngram types. ⚠️ Ships 204800, NOT the declared 262144 -- that boots but collapses the pool to 802/1,026 MiB. ⚠️ QUALITY UNTESTED -- no 8-pack has been run on this model."
     weights_companions:
       - mmproj-f16
     gateway: true
@@ -2813,7 +2813,7 @@ entries:
     default_port: 8180
     kvcalc_key: SKIP
     status: incubating
-    status_note: "⭐ THE FASTER TIER and the one the tuned recipe was built on. bench.sh canonical: 57.37 narrative (CV 1.8%) / 74.51 code (CV 2.3%) / 1566.0 prefill@10K (CV 0.9%), TTFT ~310/315 ms. MTP acceptance 0.688, accept_len 3.31, effective k 3.36. Beats its own 4.05 sibling by ~18% on ALL THREE axes at once, because the lower bit rate cuts CPU-resident experts 44% -> 25%. vs the shipped bucko vLLM recipe: narrative 57.37 vs 68.12 (-15.8%), code 74.51 vs 74.09 (a TIE inside the ~2.8% boot-to-boot noise, NOT a win), prefill +177%, TTFT -43%. ⇒ pick this for prefill/TTFT-dominated work, not for raw decode; bucko remains the decode choice. ⚠️ 3.05bpw is low enough that part of the speed win is BECAUSE it is smaller -- that is precisely what the missing 8-pack would price. ⚠️ Single boot (n=5 within-boot); boot-to-boot is ~2.8%. ⚠️⚠️ QUALITY IS UNMEASURED -- no 8-pack, no verify-stress, no soak-continuous was run on EITHER exl3 tier. Deliberately left to COMMUNITY validation (maintainer decision 2026-09-17), which is why this ships 🐣 Incubating rather than 🧪 Experimental. ⛔⛔ RETRACTED 2026-09-18 -- the '~9% slower in the container' claim was a COMPOSE BUG of ours, not a property of containerisation, and this note asserted 'Cause NOT diagnosed' for two days after it had been diagnosed. The exl3 composes had no `environment:` block, so $THREADS never reached the container and thread resolution silently took the nproc/2 branch = 16 threads, while every host-venv run used 28. On this engine 16 -> 28 threads is +20.7%, so row 7 compared a 16-thread container against a 28-thread venv and charged the difference to the container. Re-measured with the knob verified live in the boot log: narrative 52.19 -> 61.60 (+18.0%), code 68.11 -> 79.86 (+17.3%), TTFT 319/338 -> 279/311 ms. Independently reproduced 2026-09-20 at 61.81 / 78.04 on a fresh container boot at THREADS=28. ⚠️ This does NOT establish the reverse either: the 28t run is ctx 204800 / Q4 KV / split 144 while the venv rows are 32768 / FP16 / split 128 -- different configs, not comparable in either direction. A like-for-like venv-vs-container comparison has NOT been run. ⚠️ Quote the 28-thread container numbers, NOT row 7. See BENCHMARKS.md 2026-09-18. ⭐⭐ ENGINE PROPERTY: exl3 COMPUTES offloaded experts on the CPU -- expert weights never cross PCIe, only activations do. Decode is therefore set by the CPU-RESIDENT EXPERT FRACTION and almost nothing else (GPU util measured 5-8% during decode on a heavily-offloaded model). ⭐⭐ --cpu-moe-threads is the biggest knob: 16 -> 28 measured +20.7% narrative / +21.3% code; the good zone is an ABSOLUTE 24-32, NOT nproc/2. The compose ships nproc/2 as a portable FLOOR and says so at boot -- set THREADS to tune. This reproduces the llama.cpp thread finding CROSS-ENGINE, so it is a property of the HOST memory subsystem, not of either engine. ⚠️ Our harness cannot read this engine's drafter counters: detect_engine misidentifies exl3 as llamacpp and greps vLLM's log format, so verify-full's spec-dec check SKIPS and reads as 'no drafter' -- a false clean that already produced one wrong report. Read 'draft N/M accepted' off the server's stdout. ⭐⭐ max_ctx 204800 -- the SAME context our moe-cache slug for this model ships, reached by moving more experts to the CPU (split 144, up from 128). Q4 at the stock split 128 caps at 106496; split 144 clears 204800 at 50.5 T/s. VALIDATED at 14K/50K/100K prompts: zero OOM, vision 4/4, and VRAM FLAT across prompt lengths (23,182 -> 23,160 MiB) because exl3 PRE-ALLOCATES the full cache at boot, so prompt length costs almost nothing extra. ⛔ split 136 + autosplit_reserve 128 is FASTER (53.1 T/s, +5.1%) and DELIBERATELY NOT SHIPPED: it leaves only 648 MiB free on card1 vs 1,026 MiB, and 5% decode is a bad trade for margin at the context we advertise. ⚠️ Lowering the reserve is NOT the lever it looks like -- split 128 still NO-FITs at reserve 256/128/64; the idle VRAM is autosplit's whole-layer packing granularity, not held-back headroom. ⭐ The old MEASURED Q4 maximum (122880 and 114688 NO-FIT; VRAM 21,742/22,654 MiB) -- 3.25x the 32768 originally shipped. ⚠️ Q4 KV is BELOW this stack's q8-grade serving floor, so this is a capacity EXHIBIT, consistent with 🐣 Incubating; maintainer decision 2026-09-18 to maximise context. Q8 caps this tier at 65536, i.e. LESS than Q4 buys. exl3 spells the mode `Q4` (modes are FP16|Q8|Q6|Q4); `q4_0` is only the registry taxonomy token and is NOT llama.cpp's q4_0 block format. ⚠️ ZERO PATCHES -- stock upstream tabbyAPI @ 53da791 with stock exllamav3 1.5.0 wheels. ⚠️ ATTRIBUTION: ExLlamaV3 and the official quants are turboderp's work; TabbyAPI is theroyallab's. We vendor and patch neither. ⚠️ 2026-10-13: the bucko comparison above used bucko's pre-v0.5.0 numbers (narrative 68.12, prefill ~565). bucko v0.5.0 measures 79.5 / 83.1 decode and 1,623 prefill @10K on this rig (2026-10-06), ahead of this tier on all three, so 'prefill +177%' and 'pick this for prefill/TTFT-dominated work' no longer hold. Strata's IQ3_S dual slug prefills faster still (2,228 @10K)."
+    status_note: "⭐ THE FASTER TIER and the one the tuned recipe was built on. bench.sh canonical: 57.37 narrative (CV 1.8%) / 74.51 code (CV 2.3%) / 1566.0 prefill@10K (CV 0.9%), TTFT ~310/315 ms. MTP acceptance 0.688, accept_len 3.31, effective k 3.36. Beats its own 4.05 sibling by ~18% on ALL THREE axes at once, because the lower bit rate cuts CPU-resident experts 44% -> 25%. vs the shipped bucko vLLM recipe: narrative 57.37 vs 68.12 (-15.8%), code 74.51 vs 74.09 (a TIE inside the ~2.8% boot-to-boot noise, NOT a win), prefill +177%, TTFT -43%. ⇒ pick this for prefill/TTFT-dominated work, not for raw decode; bucko remains the decode choice. ⚠️ 3.05bpw is low enough that part of the speed win is BECAUSE it is smaller -- that is precisely what the missing 8-pack would price. ⚠️ Single boot (n=5 within-boot); boot-to-boot is ~2.8%. ⚠️⚠️ QUALITY IS UNMEASURED -- no 8-pack, no verify-stress, no soak-continuous was run on EITHER exl3 tier. Deliberately left to COMMUNITY validation (maintainer decision 2026-09-17), which is why this ships 🐣 Incubating rather than 🧪 Experimental. ⛔⛔ RETRACTED 2026-09-18 -- the '~9% slower in the container' claim was a COMPOSE BUG of ours, not a property of containerisation, and this note asserted 'Cause NOT diagnosed' for two days after it had been diagnosed. The exl3 composes had no `environment:` block, so $THREADS never reached the container and thread resolution silently took the nproc/2 branch = 16 threads, while every host-venv run used 28. On this engine 16 -> 28 threads is +20.7%, so row 7 compared a 16-thread container against a 28-thread venv and charged the difference to the container. Re-measured with the knob verified live in the boot log: narrative 52.19 -> 61.60 (+18.0%), code 68.11 -> 79.86 (+17.3%), TTFT 319/338 -> 279/311 ms. Independently reproduced 2026-09-20 at 61.81 / 78.04 on a fresh container boot at THREADS=28. ⚠️ This does NOT establish the reverse either: the 28t run is ctx 204800 / Q4 KV / split 144 while the venv rows are 32768 / FP16 / split 128 -- different configs, not comparable in either direction. A like-for-like venv-vs-container comparison has NOT been run. ⚠️ Quote the 28-thread container numbers, NOT row 7. See BENCHMARKS.md 2026-09-18. ⭐⭐ ENGINE PROPERTY: exl3 COMPUTES offloaded experts on the CPU -- expert weights never cross PCIe, only activations do. Decode is therefore set by the CPU-RESIDENT EXPERT FRACTION and almost nothing else (GPU util measured 5-8% during decode on a heavily-offloaded model). ⭐⭐ --cpu-moe-threads is the biggest knob: 16 -> 28 measured +20.7% narrative / +21.3% code; the good zone is an ABSOLUTE 24-32, NOT nproc/2. The compose ships nproc/2 as a portable FLOOR and says so at boot -- set THREADS to tune. This reproduces the llama.cpp thread finding CROSS-ENGINE, so it is a property of the HOST memory subsystem, not of either engine. ⚠️ Our harness cannot read this engine's drafter counters: detect_engine misidentifies exl3 as llamacpp and greps vLLM's log format, so verify-full's spec-dec check SKIPS and reads as 'no drafter' -- a false clean that already produced one wrong report. Read 'draft N/M accepted' off the server's stdout. ⭐⭐ max_ctx 204800 -- the SAME context our moe-cache slug for this model ships, reached by moving more experts to the CPU (split 144, up from 128). Q4 at the stock split 128 caps at 106496; split 144 clears 204800 at 50.5 T/s. VALIDATED at 14K/50K/100K prompts: zero OOM, vision 4/4, and VRAM FLAT across prompt lengths (23,182 -> 23,160 MiB) because exl3 PRE-ALLOCATES the full cache at boot, so prompt length costs almost nothing extra. ⛔ split 136 + autosplit_reserve 128 is FASTER (53.1 T/s, +5.1%) and DELIBERATELY NOT SHIPPED: it leaves only 648 MiB free on card1 vs 1,026 MiB, and 5% decode is a bad trade for margin at the context we advertise. ⚠️ Lowering the reserve is NOT the lever it looks like -- split 128 still NO-FITs at reserve 256/128/64; the idle VRAM is autosplit's whole-layer packing granularity, not held-back headroom. ⭐ The old MEASURED Q4 maximum (122880 and 114688 NO-FIT; VRAM 21,742/22,654 MiB) -- 3.25x the 32768 originally shipped. ⚠️ Q4 KV is BELOW this stack's q8-grade serving floor, so this is a capacity EXHIBIT, consistent with 🐣 Incubating; maintainer decision 2026-09-18 to maximise context. Q8 caps this tier at 65536, i.e. LESS than Q4 buys. exl3 spells the mode `Q4` (modes are FP16|Q8|Q6|Q4); `q4_0` is only the registry taxonomy token and is NOT llama.cpp's q4_0 block format. ⚠️ ZERO PATCHES -- TabbyAPI's own :cu13 image @ b1c2253 with stock exllamav3 1.6.5 wheels (was our build of tabbyAPI @ 53da791 with exllamav3 1.5.0 until 2026-10-30). ⚠️ ATTRIBUTION: ExLlamaV3 and the official quants are turboderp's work; TabbyAPI is theroyallab's. We vendor and patch neither. ⚠️ 2026-10-13: the bucko comparison above used bucko's pre-v0.5.0 numbers (narrative 68.12, prefill ~565). bucko v0.5.0 measures 79.5 / 83.1 decode and 1,623 prefill @10K on this rig (2026-10-06), ahead of this tier on all three, so 'prefill +177%' and 'pick this for prefill/TTFT-dominated work' no longer hold. Strata's IQ3_S dual slug prefills faster still (2,228 @10K). ⭐ 2026-10-30, exl3 1.6.5 (TabbyAPI's own :cu13 image): the 2x24 GB fit at 204800 / Q4 moved 144 → 104 (a boot ladder: 136-104 fit, 96 'Insufficient VRAM in split'), and the shipped split is 120 = 23% CPU-resident (maintainer's pick: on 1.6.5 a long prompt adds ~0.9 GB on one card, and at a 195,001-token prompt the tighter card kept 463 MiB at 104, 827 at 120). Every number above was measured on exl3 1.5.0 at split 144 (or 128); none has been re-measured at 120."
     weights_companions: []
     gateway: false
     serve_aliases: []
@@ -2846,7 +2846,7 @@ entries:
     default_port: 8181
     kvcalc_key: SKIP
     status: incubating
-    status_note: "The SAFER bit rate at a throughput cost. bench.sh canonical, TUNED (28 threads + dynamic_draft): 48.53 narrative (2 boots 48.40/48.66) / 62.94 code (2 boots 64.56/61.31) / 1335.7 prefill@10K -- about 18% behind the 3.05 sibling on every axis, for ~1 bit of weight precision whose quality benefit is UNQUANTIFIED. Also loses to the shipped bucko vLLM recipe on decode (68.12/74.09). ⚠️⚠️ BENCHMARKS row 4 (43.54/62.16) is the UNTUNED FIRST BOOT of this same variant and sits ~12% below the tuned row 5 for reasons never attributed: that boot recorded its drafter only as 'MTP n=4' without saying whether dynamic_draft was on, and under dynamic_draft that number is a CEILING, not a depth -- so it does not identify a config. Cite row 5, not row 4. Recorded as an open gap, not a tuning win. ⚠️ This branch ships a different file set from 3.05 (vision_k6.safetensors present, no MTP patch file); the layouts are not interchangeable. ⚠️⚠️ QUALITY IS UNMEASURED -- no 8-pack, no verify-stress, no soak-continuous was run on EITHER exl3 tier. Deliberately left to COMMUNITY validation (maintainer decision 2026-09-17), which is why this ships 🐣 Incubating rather than 🧪 Experimental. ⛔⛔ RETRACTED 2026-09-18 -- the '~9% slower in the container' claim was a COMPOSE BUG of ours, not a property of containerisation, and this note asserted 'Cause NOT diagnosed' for two days after it had been diagnosed. The exl3 composes had no `environment:` block, so $THREADS never reached the container and thread resolution silently took the nproc/2 branch = 16 threads, while every host-venv run used 28. On this engine 16 -> 28 threads is +20.7%, so row 7 compared a 16-thread container against a 28-thread venv and charged the difference to the container. Re-measured with the knob verified live in the boot log: narrative 52.19 -> 61.60 (+18.0%), code 68.11 -> 79.86 (+17.3%), TTFT 319/338 -> 279/311 ms. Independently reproduced 2026-09-20 at 61.81 / 78.04 on a fresh container boot at THREADS=28. ⚠️ This does NOT establish the reverse either: the 28t run is ctx 204800 / Q4 KV / split 144 while the venv rows are 32768 / FP16 / split 128 -- different configs, not comparable in either direction. A like-for-like venv-vs-container comparison has NOT been run. ⚠️ Quote the 28-thread container numbers, NOT row 7. See BENCHMARKS.md 2026-09-18. ⭐⭐ ENGINE PROPERTY: exl3 COMPUTES offloaded experts on the CPU -- expert weights never cross PCIe, only activations do. Decode is therefore set by the CPU-RESIDENT EXPERT FRACTION and almost nothing else (GPU util measured 5-8% during decode on a heavily-offloaded model). ⭐⭐ --cpu-moe-threads is the biggest knob: 16 -> 28 measured +20.7% narrative / +21.3% code; the good zone is an ABSOLUTE 24-32, NOT nproc/2. The compose ships nproc/2 as a portable FLOOR and says so at boot -- set THREADS to tune. This reproduces the llama.cpp thread finding CROSS-ENGINE, so it is a property of the HOST memory subsystem, not of either engine. ⚠️ Our harness cannot read this engine's drafter counters: detect_engine misidentifies exl3 as llamacpp and greps vLLM's log format, so verify-full's spec-dec check SKIPS and reads as 'no drafter' -- a false clean that already produced one wrong report. Read 'draft N/M accepted' off the server's stdout. ⭐⭐ max_ctx 204800, reached at split 256 (up from 225) at 39.3 T/s -- the heavier tier needs a far deeper split than the 3.05 sibling's 144 for the same context, and pays for it in decode. split 224 NO-FITs, so 256 is the minimum. ⭐ The old MEASURED Q4 maximum (131072/98304/81920 all NO-FIT; VRAM 22,596/21,730 MiB) -- 2x the 32768 originally shipped, and HALF what the 3.05 sibling reaches, which is the cost of the heavier tier. ⭐ This ladder was also this tier's FIRST EVER BOOT IN THE SHIPPED CONTAINER; everything before it was derived from the 3.05 sibling. ⚠️ Q4 KV is BELOW the q8-grade serving floor -- a capacity EXHIBIT, consistent with 🐣 Incubating; maintainer decision 2026-09-18. ⚠️ ZERO PATCHES -- stock upstream tabbyAPI @ 53da791 with stock exllamav3 1.5.0 wheels. ⚠️ ATTRIBUTION: ExLlamaV3 and the official quants are turboderp's work; TabbyAPI is theroyallab's. We vendor and patch neither."
+    status_note: "The SAFER bit rate at a throughput cost. bench.sh canonical, TUNED (28 threads + dynamic_draft): 48.53 narrative (2 boots 48.40/48.66) / 62.94 code (2 boots 64.56/61.31) / 1335.7 prefill@10K -- about 18% behind the 3.05 sibling on every axis, for ~1 bit of weight precision whose quality benefit is UNQUANTIFIED. Also loses to the shipped bucko vLLM recipe on decode (68.12/74.09). ⚠️⚠️ BENCHMARKS row 4 (43.54/62.16) is the UNTUNED FIRST BOOT of this same variant and sits ~12% below the tuned row 5 for reasons never attributed: that boot recorded its drafter only as 'MTP n=4' without saying whether dynamic_draft was on, and under dynamic_draft that number is a CEILING, not a depth -- so it does not identify a config. Cite row 5, not row 4. Recorded as an open gap, not a tuning win. ⚠️ This branch ships a different file set from 3.05 (vision_k6.safetensors present, no MTP patch file); the layouts are not interchangeable. ⚠️⚠️ QUALITY IS UNMEASURED -- no 8-pack, no verify-stress, no soak-continuous was run on EITHER exl3 tier. Deliberately left to COMMUNITY validation (maintainer decision 2026-09-17), which is why this ships 🐣 Incubating rather than 🧪 Experimental. ⛔⛔ RETRACTED 2026-09-18 -- the '~9% slower in the container' claim was a COMPOSE BUG of ours, not a property of containerisation, and this note asserted 'Cause NOT diagnosed' for two days after it had been diagnosed. The exl3 composes had no `environment:` block, so $THREADS never reached the container and thread resolution silently took the nproc/2 branch = 16 threads, while every host-venv run used 28. On this engine 16 -> 28 threads is +20.7%, so row 7 compared a 16-thread container against a 28-thread venv and charged the difference to the container. Re-measured with the knob verified live in the boot log: narrative 52.19 -> 61.60 (+18.0%), code 68.11 -> 79.86 (+17.3%), TTFT 319/338 -> 279/311 ms. Independently reproduced 2026-09-20 at 61.81 / 78.04 on a fresh container boot at THREADS=28. ⚠️ This does NOT establish the reverse either: the 28t run is ctx 204800 / Q4 KV / split 144 while the venv rows are 32768 / FP16 / split 128 -- different configs, not comparable in either direction. A like-for-like venv-vs-container comparison has NOT been run. ⚠️ Quote the 28-thread container numbers, NOT row 7. See BENCHMARKS.md 2026-09-18. ⭐⭐ ENGINE PROPERTY: exl3 COMPUTES offloaded experts on the CPU -- expert weights never cross PCIe, only activations do. Decode is therefore set by the CPU-RESIDENT EXPERT FRACTION and almost nothing else (GPU util measured 5-8% during decode on a heavily-offloaded model). ⭐⭐ --cpu-moe-threads is the biggest knob: 16 -> 28 measured +20.7% narrative / +21.3% code; the good zone is an ABSOLUTE 24-32, NOT nproc/2. The compose ships nproc/2 as a portable FLOOR and says so at boot -- set THREADS to tune. This reproduces the llama.cpp thread finding CROSS-ENGINE, so it is a property of the HOST memory subsystem, not of either engine. ⚠️ Our harness cannot read this engine's drafter counters: detect_engine misidentifies exl3 as llamacpp and greps vLLM's log format, so verify-full's spec-dec check SKIPS and reads as 'no drafter' -- a false clean that already produced one wrong report. Read 'draft N/M accepted' off the server's stdout. ⭐⭐ max_ctx 204800, reached at split 256 (up from 225) at 39.3 T/s -- the heavier tier needs a far deeper split than the 3.05 sibling's 144 for the same context, and pays for it in decode. split 224 NO-FITs, so 256 is the minimum. ⭐ The old MEASURED Q4 maximum (131072/98304/81920 all NO-FIT; VRAM 22,596/21,730 MiB) -- 2x the 32768 originally shipped, and HALF what the 3.05 sibling reaches, which is the cost of the heavier tier. ⭐ This ladder was also this tier's FIRST EVER BOOT IN THE SHIPPED CONTAINER; everything before it was derived from the 3.05 sibling. ⚠️ Q4 KV is BELOW the q8-grade serving floor -- a capacity EXHIBIT, consistent with 🐣 Incubating; maintainer decision 2026-09-18. ⚠️ ZERO PATCHES -- TabbyAPI's own :cu13 image @ b1c2253 with stock exllamav3 1.6.5 wheels (was our build of tabbyAPI @ 53da791 with exllamav3 1.5.0 until 2026-10-30). ⚠️ ATTRIBUTION: ExLlamaV3 and the official quants are turboderp's work; TabbyAPI is theroyallab's. We vendor and patch neither."
     weights_companions: []
     gateway: false
     serve_aliases: []
@@ -4573,9 +4573,73 @@ entries:
     default_port: 8023
     kvcalc_key: SKIP
     status: incubating
-    status_note: "HyperQwen (syv-ai) setup B on one card: its vLLM 0.31.0 derivative image, DFlash2 W4A16 drafter at 7 tokens per verify, bf16 KV, 64K. The image prepares the model at the first start (int8 heads, draft vocabulary, the single-user fast variant). First port and validation: community PR #1634 (VykosX). Measured 2026-10-14 on one 3090 at the stock 370 W: 131.4 / 230.1 decode, 1,190 prefill @10K, DFlash2 acceptance length 4.2, 15.02 GiB weights + a pinned 5.2 GiB KV pool (68,605 tokens). First start 368 s (prepare + compile), later starts 88 s."
+    status_note: "HyperQwen (syv-ai) setup B on one card: its vLLM 0.32.0 derivative image, DFlash2 W4A16 drafter at 7 tokens per verify, bf16 KV, 64K. The image prepares the model at the first start (int8 heads, draft vocabulary, the single-user fast variant). First port and validation: community PR #1634 (VykosX). Measured 2026-10-14 on one 3090 at the stock 370 W: 131.4 / 230.1 decode, 1,190 prefill @10K, DFlash2 acceptance length 4.2, 15.02 GiB weights + a pinned 5.2 GiB KV pool (68,605 tokens). First start 368 s (prepare + compile), later starts 88 s."
     weights_companions:
       - dflash2
+    gateway: false
+    serve_aliases: []
+    required_sm: 8.6
+  qengine/qwen38-27b-dual:
+    origin: core
+    model: qwen3.8-27b
+    weights_variant: redhat-int4
+    workload: multi-stream-tenant
+    engine: qengine
+    drafter: null
+    spec_method: mtp
+    kv_format: fp8_e4m3
+    act_format: 16bit
+    act8_capable: false
+    offload: null
+    moe_cache: false
+    host_ram_gb: null
+    kv_offload: null
+    chat_template: native
+    tp: 2
+    max_ctx: 262144
+    max_num_seqs: 32
+    mem_util: null
+    compose_path: models/qwen3.8-27b/qengine/compose/dual/redhat-int4/mtp.yml
+    requires_nvlink: false
+    requires_homogeneous_arch: false
+    required_engine_features: []
+    default_port: 8197
+    kvcalc_key: SKIP
+    status: caveats
+    status_note: "⚠️ Production w/ caveats from 2026-10-31: the full gate passed on a community rig (#1862, eddietheengineer, QEngine 1.3, 3090 + 3090 Ti at 260 / 240 W: verify-full, verify-stress 8/8 with the ceiling ladder to 240K, both soaks PASS, 8-pack 108 / 132 of 150 thinking off / on); here bench + verify-full. QEngine (bpx03's own C++/CUDA engine and image; pinned 1.3.2 since 2026-10-31, its :vision image, the measurements below are 1.3's). Vision on by default (VISION=0 off; verify-full vision 4/4): the KV pool is 289,792 tokens with it, 374,784 without on two 3090s, tensor parallel 2, the README's two-card setting: QE_MAX_SEQS=32, full 262K context, FP8 KV in a shared pool per GPU (upstream: ~387K tokens on two cards). MTP up to 7 drafts a step (adaptive) with QEngine's fine-tuned head and draft vocabulary (its release assets: in the weights folder, or downloaded by the server from 1.3.2), plus lookup drafts. Default effort low through QEngine's QE_REASONING_EFFORT (from 1.3.1); no thinking budget. ⚠️ PolyForm Noncommercial 1.0.0. Measured 2026-10-28 on two 3090s at 230 W (bench.sh, own boot): 147.2 / 216.3 decode, 2,430 prefill @10K, 1,786 @90K, MTP acceptance length 3.4, 23,370 MiB a card; KV pool 374,784 tokens; P2P for the decode all-reduce, the copy engine for prefill transfers (QEngine's own pick). verify-full 8 + 2 n/a. First start 25 s with the GEMM tuning, later 21 s. Upstream's two-card figure: ~162 tok/s single user."
+    weights_companions: []
+    gateway: false
+    serve_aliases: []
+    required_sm: 8.6
+  qengine/qwen38-flash-next-dual:
+    origin: core
+    model: qwen3.8-flash-next
+    weights_variant: qengine-int4
+    workload: multi-stream-tenant
+    engine: qengine
+    drafter: null
+    spec_method: mtp
+    kv_format: fp8_e4m3
+    act_format: 16bit
+    act8_capable: false
+    offload: engine
+    moe_cache: false
+    host_ram_gb: 88
+    kv_offload: null
+    chat_template: native
+    tp: 2
+    max_ctx: 262144
+    max_num_seqs: 16
+    mem_util: null
+    compose_path: models/qwen3.8-flash-next/qengine/compose/dual/qengine-int4/mtp.yml
+    requires_nvlink: false
+    requires_homogeneous_arch: false
+    required_engine_features: []
+    default_port: 8198
+    kvcalc_key: SKIP
+    status: incubating
+    status_note: "QEngine's Flash-Next engine (from 1.3, pinned 1.3.2 since 2026-10-31, its :vision image; the measurements below are 1.3's; vision on by default, VISION=0 off, verify-full vision 4/4, GPU1's expert budget 15.05 GiB with it vs 15.73) (libqflash.so, upstream's preview: tested on one machine, no quality benchmark yet) on two 3090s: the routed experts split evenly over the cards, about half the expert groups in pinned host RAM (~15 GB a card) with a VRAM expert cache, FP8 attention KV split by position, 262K context, 16 slots, MTP up to 3 drafts a step plus lookup drafts. host_ram_gb 88 MEASURED 2026-10-28 (MemAvailable fell 88 GB at ready: the 51.8 GB INT8 n-gram table and ~30 GB of expert groups, pinned); the archive (48 GB by default) then grows to ~114 GB in all, but it's elastic: it stops at MemAvailable minus a margin. Default effort low through QEngine's QE_REASONING_EFFORT (from 1.3.1); no thinking budget. ⚠️ PolyForm Noncommercial 1.0.0. Measured 2026-10-28 on two 3090s at 230 W (bench.sh, own boot): 164.0 / 170.6 decode, 1,921 prefill @10K (CV 15%), 2,373 @90K, MTP acceptance length 2.8, 24,122 MiB a card; verify-full 8 + 2 n/a; weights sha256-verified against the HF tree. First start 113 s with the weights in the page cache, later 64 s. Community PR #1836 (eddietheengineer) found a long-prefill NaN with FLASH_COMM=auto and an 8-slot OOM in the 8-pack's agent pack on its rig; neither reproduced here (90K / 107K needles on auto, 8 concurrent conversations to 27.7K tokens at 16 slots); FLASH_COMM=ce and FLASH_MAX_SEQS=4 are its fixes; on 1.3.2 add FLASH_QSA_PIPE_CE=0 with FLASH_COMM=ce (#1841: its copy-engine prefill pipeline returned 0 tokens for a concurrent shared-prefix request; reproduced here 2026-10-31, clean with the switch; auto keeps P2P on this rig). With both, an 8-pack run there later aborted on a CUDA-graph out-of-memory (#1846; the log line 'graph instantiate out of memory, other graphs dropped' comes first, and shows here too, at 16 slots as well, with no crash so far); FLASH_EC_MARGIN_MB=1024 fixed it, for ~10% of decode there. Upstream's two-card figures (2026-10-26): short c=1 139 tok/s, agent c=8 264 tok/s."
+    weights_companions: []
     gateway: false
     serve_aliases: []
     required_sm: 8.6
@@ -6390,7 +6454,7 @@ entries:
     act8_capable: false
     offload: engine
     moe_cache: false
-    host_ram_gb: 84
+    host_ram_gb: 93
     kv_offload: null
     chat_template: native
     tp: 2
@@ -6421,7 +6485,7 @@ entries:
     act8_capable: false
     offload: engine
     moe_cache: false
-    host_ram_gb: 84
+    host_ram_gb: 93
     kv_offload: null
     chat_template: native
     tp: 1
@@ -6452,7 +6516,7 @@ entries:
     act8_capable: false
     offload: engine
     moe_cache: false
-    host_ram_gb: 84
+    host_ram_gb: 93
     kv_offload: null
     chat_template: native
     tp: 2
@@ -6483,7 +6547,7 @@ entries:
     act8_capable: false
     offload: engine
     moe_cache: false
-    host_ram_gb: 84
+    host_ram_gb: 93
     kv_offload: null
     chat_template: native
     tp: 1
@@ -6514,7 +6578,7 @@ entries:
     act8_capable: false
     offload: engine
     moe_cache: false
-    host_ram_gb: 84
+    host_ram_gb: 93
     kv_offload: null
     chat_template: native
     tp: 4
@@ -6983,6 +7047,38 @@ entries:
     gateway: false
     serve_aliases: []
     category: frontier
+  llamacpp/qwen38-27b-swift15-iq3s-mtp:
+    origin: core
+    model: qwen3.8-27b
+    weights_variant: ukisai-swift15-gsq-rco-iq3s-mtp
+    workload: vision-coding
+    engine: llama-cpp-local
+    drafter: qwen-mtp-builtin
+    spec_method: null
+    kv_format: q4_0
+    act_format: 16bit
+    act8_capable: false
+    offload: null
+    moe_cache: false
+    host_ram_gb: null
+    kv_offload: null
+    chat_template: native
+    tp: 1
+    max_ctx: 262144
+    max_num_seqs: 1
+    mem_util: null
+    compose_path: models/qwen3.8-27b/llama-cpp/compose/single/ukisai-swift15-gsq-rco-iq3s-mtp/base.yml
+    requires_nvlink: false
+    requires_homogeneous_arch: false
+    required_engine_features: []
+    default_port: 8023
+    kvcalc_key: SKIP
+    status: experimental
+    status_note: "UkisAI Swift-1.5 (an RL+OPD post-trained Qwen3.8-27B) as a GSQ-RCO IQ3_S-mtp GGUF with its MTP head embedded, plus its F16 projector: one card, MTP n=2, q4_0 KV at 262K, vision. Validated by the contributor on a waterblocked RTX 4090 at 450 W (verify-full 8/8, verify-stress, soak, bench 102.9 / 120.7 tok/s, quality --medium), on the stock template; not booted on the 3090 reference rig, so it ships at its sibling's status. Serves Swift's own GGUF template with an effort mapping (high and max -> xhigh, minimal -> low), which the stock one rejects with HTTP 500. ⚠️ Swift Open License 1.0: commercial use only below US$1M annual revenue."
+    weights_companions:
+      - ukisai-swift15-mmproj-f16
+    gateway: false
+    serve_aliases: []
 
 defaults:
   qwen3.6-27b:

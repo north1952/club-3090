@@ -1174,10 +1174,11 @@ explain_variant() {
   exit 0
 }
 
-# The log of a stopped managed container, saved before teardown removes it: it is
-# what a user reads after a crash. <data dir>/logs/stopped-containers/<name>-<finished
-# at>.log; the newest 10 are kept. Prints the path. Fails when it can't be written, and
-# the caller then keeps the container.
+# The log of a stopped managed container, or of a running one that has restarted, saved
+# before teardown removes it: it is what a user reads after a crash. <data dir>/logs/
+# stopped-containers/<name>-<finished at>.log (for a restarted one, when its last run ended);
+# the newest 10 are kept. Prints the path. Fails when it can't be written: the caller then
+# keeps a stopped container, and only warns for a running one (the switch goes on).
 _save_stopped_container_log() {
   local c="$1" dir finished file
   dir="$(club_config_data_dir)/logs/stopped-containers"
@@ -1248,7 +1249,20 @@ down_running() {
         fi
         echo "[switch] removing stopped container: ${c} (${state}); its log: ${saved}" ;;
       *)
-        echo "[switch] bringing down: ${c}" ;;
+        # A running container that has restarted crashed at least once, and its log, kept across
+        # the restarts, is the only record of why. #1846: an engine that died mid-8-pack and came
+        # back lost its log when the user switched slugs. So it is saved first, like a stopped one's.
+        local restarts
+        restarts="$(docker inspect --format '{{.RestartCount}}' "$c" 2>/dev/null || true)"
+        if [[ "$restarts" =~ ^[1-9][0-9]*$ ]]; then
+          if saved="$(_save_stopped_container_log "$c")"; then
+            echo "[switch] bringing down: ${c} (it restarted ${restarts} time(s); its log: ${saved})"
+          else
+            echo "[switch] bringing down: ${c} (it restarted ${restarts} time(s); its log could not be saved to $(club_config_data_dir)/logs)" >&2
+          fi
+        else
+          echo "[switch] bringing down: ${c}"
+        fi ;;
     esac
     brought_down=1
     # derive the compose dir/file from the container's labels — project-label fallback
@@ -1585,6 +1599,11 @@ check_variant() {
   local -a _ls_force=()
   [[ "${FORCE:-0}" == "1" ]] && _ls_force=(--force)
   _launch_settings check --slug "$v" "${_ls_force[@]}" || exit 1
+  # QE_METRICS_PORT (QEngine's own setting) publishes its metrics port on 127.0.0.1 in
+  # up_variant; a value that isn't a port is refused here, before the teardown.
+  if [[ "$(engine_kind_from_slug "$v")" == "qengine" ]]; then
+    python3 "${ROOT_DIR}/scripts/lib/qengine_metrics.py" check --port "${QE_METRICS_PORT:-}" || exit 1
+  fi
   #  - repo_drift: warn if local HEAD is behind origin/master
   #  - compose_deps: HARD error if compose mounts a model dir that doesn't exist on host
   #    (catches the "you didn't WITH_DFLASH_DRAFT=1 then tried dual-dflash-noviz" case;
@@ -1679,7 +1698,16 @@ up_variant() {
   # compose file, and measurement records / c3 need to know which one this is.
   local label_override=""
   label_override="$(club_slug_label_override "$v" "${full_dir}/${file}" "${ROOT_DIR}")"
-  (cd "${full_dir}" && ${COMPOSE_BIN} -f "${file}" ${label_override:+-f "$label_override"} up -d --remove-orphans)
+  # QEngine's metrics and dashboard port, on 127.0.0.1 only, when QE_METRICS_PORT asks for
+  # it: compose can't publish a port conditionally, so an override carries the mapping.
+  local metrics_override=""
+  if [[ "$(engine_kind_from_slug "$v")" == "qengine" ]]; then
+    metrics_override="$(python3 "${ROOT_DIR}/scripts/lib/qengine_metrics.py" override \
+      --slug "$v" --compose "${full_dir}/${file}" --port "${QE_METRICS_PORT:-}")" || exit 1
+    [[ -n "$metrics_override" ]] \
+      && echo "[switch] QEngine metrics and dashboard: http://127.0.0.1:${QE_METRICS_PORT}/ (QE_METRICS_PORT; loopback only)"
+  fi
+  (cd "${full_dir}" && ${COMPOSE_BIN} -f "${file}" ${label_override:+-f "$label_override"} ${metrics_override:+-f "$metrics_override"} up -d --remove-orphans)
 }
 
 resolve_ready_url() {

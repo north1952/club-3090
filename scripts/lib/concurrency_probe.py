@@ -30,6 +30,10 @@ import sys
 import threading
 import time
 import urllib.request
+# every request to the engine goes through engine_http (scripts/lib) — it resolves the
+# engine's API key (Strata 0.2+) from the URL through the repo's own helpers, lazily.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import engine_http
 
 # ~0.23 tok/char was calibrated on the BLOCK below (same as the heredoc).
 TOK_PER_CHAR = 0.23
@@ -360,7 +364,7 @@ class GaugePoller:
 
     def _read(self):
         try:
-            with urllib.request.urlopen(self.url, timeout=2) as r:
+            with engine_http.urlopen(self.url, timeout=2) as r:
                 return metrics_gauges(r.read().decode("utf-8", "replace"))
         except Exception:
             return (None, None)
@@ -521,7 +525,7 @@ def spec_label_from_sglang_info(info):
 def _sglang_info(url):
     for path in ("/get_server_info", "/server_info"):
         try:
-            with urllib.request.urlopen(url.rstrip("/") + path, timeout=5) as r:
+            with engine_http.urlopen(url.rstrip("/") + path, timeout=5) as r:
                 info = json.loads(r.read().decode("utf-8", "replace"))
             if isinstance(info, dict):
                 return info
@@ -530,9 +534,20 @@ def _sglang_info(url):
     return None
 
 
+def _container_image(container):
+    """The image a container runs, or "" when docker can't say."""
+    try:
+        r = subprocess.run(["docker", "inspect", container, "--format", "{{.Config.Image}}"],
+                           capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10)
+    except Exception:
+        return ""
+    return r.stdout.strip() if r.returncode == 0 else ""
+
+
 def served_max_len(url, container=""):
     """The context one request may use, as the ENGINE reports it: SGLang's server-info
-    context_length, vLLM's /v1/models max_model_len, else vLLM's max_seq_len boot line. None
+    context_length, vLLM's /v1/models max_model_len, else vLLM's max_seq_len boot line, or a
+    QEngine container's own boot line (its HTTP API reports none, #1846). None
     when none of them answers (the caller falls back to the container's flags). #1537: a Cmd
     grep for `max-model-len N` read "?" for vLLM auto-fit (`--max-model-len -1`) and for every
     SGLang compose (`--context-length`, set from CONTEXT_LENGTH in the entrypoint)."""
@@ -542,7 +557,7 @@ def served_max_len(url, container=""):
         if isinstance(v, int) and v > 0:
             return v
         try:
-            with urllib.request.urlopen(url.rstrip("/") + "/v1/models", timeout=5) as r:
+            with engine_http.urlopen(url.rstrip("/") + "/v1/models", timeout=5) as r:
                 data = json.loads(r.read().decode("utf-8", "replace")).get("data") or []
             v = (data[0] or {}).get("max_model_len") if data else None
             if isinstance(v, int) and v > 0:
@@ -550,9 +565,16 @@ def served_max_len(url, container=""):
         except Exception:
             pass
     if container:
-        found = list(re.finditer(r"max_seq_len=(\d+)", _docker_logs_head(container)))
+        head = _docker_logs_head(container)
+        found = list(re.finditer(r"max_seq_len=(\d+)", head))
         if found:
             return int(found[-1].group(1))
+        # QEngine: "KV pool: … (max context N)" (27B), "[qflash Ns] ready, context N" (Flash-Next).
+        # Read only for a QEngine image: the words are its own.
+        if "qengine" in _container_image(container):
+            found = list(re.finditer(r"(?:max context|ready, context) (\d+)", head))
+            if found:
+                return int(found[-1].group(1))
     return None
 
 
@@ -824,7 +846,7 @@ def run_probe():
         req = urllib.request.Request(
             URL + "/v1/chat/completions",
             data=body,
-            headers={"Content-Type": "application/json"},
+            headers=engine_http.headers(URL),
         )
         t0 = time.time()
         t_first = None
@@ -833,7 +855,7 @@ def run_probe():
         chunks = 0
         cached = 0
         try:
-            resp = urllib.request.urlopen(req, timeout=REQ_TIMEOUT)
+            resp = engine_http.urlopen(req, timeout=REQ_TIMEOUT)
             for raw in resp:
                 line = raw.decode("utf-8", "ignore").strip()
                 if not line.startswith("data:"):

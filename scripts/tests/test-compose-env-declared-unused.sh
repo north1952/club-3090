@@ -47,9 +47,27 @@ ENGINE_PREFIXES = (
     "VLLM_", "GGML_", "LLAMA_", "NCCL_", "CUDA_", "TRITON_", "PYTORCH_",
     "TORCH", "SGLANG_", "LMCACHE_", "HF_", "HUGGING_FACE_", "NVIDIA_",
     "OMP_", "MKL_", "EXL3_", "TABBY_", "SAFETENSORS_", "XDG_",
+    # QEngine: its image's entrypoint, server/app.py and libqengine.so / libqflash.so read QE_*
+    "QE_",
 )
 ENGINE_EXACT = {"PATH", "HOME", "HOSTNAME", "LD_LIBRARY_PATH", "PWD", "IFS",
-                "DEBIAN_FRONTEND", "PYTHONUNBUFFERED", "PYTHONUTF8"}
+                "DEBIAN_FRONTEND", "PYTHONUNBUFFERED", "PYTHONUTF8",
+                # QEngine's Flash-Next engine (libqflash.so) reads these; named one by one,
+                # because a FLASH_ prefix would also excuse FLASH_ATTN on the vLLM composes
+                "FLASH_MAX_SEQS", "FLASH_KV_ARCHIVE_GB", "FLASH_NGRAM_PIN",
+                "FLASH_EC_MARGIN_MB", "FLASH_LOOKUP", "FLASH_COMM",
+                # from 1.3.1
+                "FLASH_KV", "FLASH_KV_RAM_TOKENS", "FLASH_PFB_BIG", "FLASH_EC_RECLAIM_S",
+                "FLASH_MAX_PREFILLS", "FLASH_GUARD_MAX",
+                # Strata's engine (components/engine/<version>/strata) reads these; named one by one, because a
+                # STRATA_ prefix would also excuse our own STRATA_START_GPUS / STRATA_API_KEY settings
+                "STRATA_GDN_TC", "STRATA_GDN_CONVL2",
+                # the engine's PLE residency policy: 0 keeps the n-gram table on direct disk reads
+                "STRATA_PLE_AUTO_RAM",
+                # from 1.3.2
+                "FLASH_PFB_ALIAS", "FLASH_PREFIX_GB", "FLASH_YARN", "FLASH_LEND_CHECK",
+                # 1.3.2's copy-engine prefill pipeline switch (#1841)
+                "FLASH_QSA_PIPE_CE"}
 
 # DEBT REGISTER — each entry must name WHY the dead knob is deliberate.
 # Shrink it; never grow it silently. An entry here means a documented knob is

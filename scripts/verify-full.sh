@@ -21,7 +21,8 @@
 #   8. MTP acceptance length — parse SpecDecoding metrics from docker logs,
 #      assert mean AL >= 2.0 (sanity that spec-decode is contributing).
 #      llama.cpp: per-request draft acceptance rate >= LLAMACPP_ACCEPT_MIN
-#      (default 0.30); skipped when llama-server runs no drafter
+#      (default 0.30), judged on at least LLAMACPP_DRAFT_MIN_SAMPLE drafted
+#      tokens (default 16); skipped when llama-server runs no drafter
 #
 # For boundary / stress validation (longctx needle ladder, ~25K-token tool
 # prefill OOM detection): see scripts/verify-stress.sh
@@ -145,12 +146,16 @@ detect_engine() {
   # classified every exl3 run as llamacpp — which sent step 9 down the llamacpp
   # branch to SKIP, reading as "no drafter" on an engine whose MTP was running
   # at ~0.69 acceptance the whole time. Prefer container/image evidence whenever
-  # it names a family; fall back to llamacpp otherwise, so host builds and
+  # it names a family, then what the server calls itself (/v1/models owned_by):
+  # QEngine serves a llama.cpp-style /props too from 1.3.1, and a host-run one has
+  # no container to name it. Fall back to llamacpp otherwise, so host builds and
   # unconventional container names behave exactly as before.
   if curl -sf -m 3 "${URL}/props" >/dev/null 2>&1; then
     local _props_kind
     _props_kind="$(engine_kind_from_container "$CONTAINER")"
     [[ "$_props_kind" == "unknown" ]] && _props_kind="$(engine_kind_from_image "$CONTAINER")"
+    [[ "$_props_kind" == "unknown" ]] && _props_kind="$(engine_kind_from_owned_by "$(curl -sf -m 5 "${URL}/v1/models" 2>/dev/null \
+      | python3 -c "import sys,json; print(((json.load(sys.stdin).get('data') or [{}])[0] or {}).get('owned_by','') or '')" 2>/dev/null)")"
     [[ "$_props_kind" != "unknown" ]] && { echo "$_props_kind"; return 0; }
     echo "llamacpp"; return 0
   fi
@@ -175,7 +180,11 @@ detect_engine() {
   # is the same one rebench-full.sh and club3090-env.sh already use.
   # The prefix arms themselves now live in scripts/lib/engine-kind.sh
   # (club-3090#1282) so adding an engine is a ONE-place change.
-  engine_kind_from_container "$CONTAINER"
+  k="$(engine_kind_from_container "$CONTAINER")"
+  [[ "$k" != "unknown" ]] && { echo "$k"; return 0; }
+  # Last, /v1/models' owned_by, which needs no container (as in verify-stress.sh).
+  engine_kind_from_owned_by "$(curl -sf -m 5 "${URL}/v1/models" 2>/dev/null \
+      | python3 -c "import sys,json; print(((json.load(sys.stdin).get('data') or [{}])[0] or {}).get('owned_by','') or '')" 2>/dev/null)"
   return 0
 }
 
@@ -710,8 +719,13 @@ check_mtp_acceptance() {
         skip "container '${CONTAINER}' not found (CONTAINER=none for host endpoints)"
         return 0
       fi
-      local lc_cfg lc_since lc_out="" lc_try lc_rate lc_acc lc_gen lc_min
+      local lc_cfg lc_since lc_out="" lc_try lc_rate lc_acc lc_gen=0 lc_min lc_floor
       lc_cfg="$(llamacpp_spec_args "${CONTAINER}")"
+      lc_floor="${LLAMACPP_DRAFT_MIN_SAMPLE:-16}"
+      if ! [[ "$lc_floor" =~ ^[0-9]+$ ]]; then
+        fail "invalid LLAMACPP_DRAFT_MIN_SAMPLE=${lc_floor}" "Set a whole number of drafted tokens."
+        return 1
+      fi
       for lc_try in 1 2; do
         lc_since="$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)"
         curl -sf -m 300 "${URL}/v1/chat/completions" \
@@ -725,10 +739,13 @@ check_mtp_acceptance() {
           }" >/dev/null 2>&1 || { fail "acceptance-trigger request failed" "Check docker logs"; return 1; }
         sleep 2
         lc_out="$(docker logs --since "${lc_since}" "${CONTAINER}" 2>&1 | llamacpp_draft_rate)"
-        # A second request only when a drafter is configured and drafted nothing: an n-gram
-        # drafter (ngram-mod) has nothing to match on the first request after a boot
-        # (measured: 0 drafted, then 200/200 on the same request).
-        [[ -n "$lc_out" || -z "$lc_cfg" ]] && break
+        # A second request when the first gave too small a sample to judge: an n-gram
+        # drafter (ngram-mod) has little to match on the first request after a boot. On
+        # our rig it drafted nothing, then 200/200 on the same request. On #1857's it
+        # drafted ONE token, which was rejected, and a 0/1 sample failed the check.
+        [[ -z "$lc_out" && -z "$lc_cfg" ]] && break
+        read -r _ _ lc_gen _ <<<"${lc_out:-0 0 0 0}"
+        (( lc_gen >= lc_floor )) && break
       done
       if [[ -z "$lc_out" ]]; then
         if [[ -n "$lc_cfg" ]]; then
@@ -740,6 +757,11 @@ check_mtp_acceptance() {
         return 0
       fi
       read -r lc_rate lc_acc lc_gen _ <<<"$lc_out"
+      if (( lc_gen < lc_floor )); then
+        fail "the drafter drafted only ${lc_gen} token(s) in ${lc_try} request(s), too few to judge (LLAMACPP_DRAFT_MIN_SAMPLE=${lc_floor}${lc_cfg:+; ${lc_cfg}})" \
+             "The same counting prompt sent twice gives an n-gram drafter its own first answer to match, and an MTP head or draft model drafts on nearly every step, so a working drafter clears this easily. Check the boot log for the drafter loading."
+        return 1
+      fi
       lc_min="${LLAMACPP_ACCEPT_MIN:-0.30}"
       if ! [[ "$lc_min" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
         fail "invalid LLAMACPP_ACCEPT_MIN=${lc_min}" "Set a non-negative numeric threshold."

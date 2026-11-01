@@ -676,7 +676,7 @@ if [[ "$CAPTURE" == "1" && -f "${ROOT_DIR}/scripts/lib/capture.sh" ]]; then
   # value on stdout, so a notice printed there gets captured by this $(...) and
   # rendered inside the label — seen live as
   #   "KV cache type  : capture: KV cache type unavailable (…)".
-  if _v="$(cap_kv_type "$CAP_ARGV")"; then
+  if _v="$(cap_kv_type "$CAP_ARGV" "$ENGINE_KIND")"; then
     echo "  KV cache type  : ${_v}"
   else
     cap_note_unavailable "KV cache type" "not in argv, /props or the boot log"
@@ -728,8 +728,9 @@ if [[ "$CAPTURE" == "1" && -f "${ROOT_DIR}/scripts/lib/capture.sh" ]]; then
   else
     cap_note_unavailable "system RAM" "/proc/meminfo not readable"
   fi
-  _v="$(cap_swap_verdict || true)"
+  _v="$(cap_swap_verdict "" start || true)"
   [[ -n "$_v" ]] && echo "  swap check     : ${_v}"
+  cap_swapin_mark   # the end-of-run verdict counts swap-ins from here (#1846)
 
   if [[ "$STREAM_CALIB" == "1" ]]; then
     echo ""
@@ -795,16 +796,16 @@ fi
 export BENCH_ENDPOINT="${BENCH_ENDPOINT:-$ENDPOINT}"
 export BENCH_SHORT_EOS_FRAC="${BENCH_SHORT_EOS_FRAC:-$SHORT_EOS_FRAC}"
 
-python3 - "$URL" "$MODEL" "$WARMUPS" "$RUNS" "$QUIET" "$ONLY" \
+CLUB_SCRIPTS_LIB="${ROOT_DIR}/scripts/lib" python3 - "$URL" "$MODEL" "$WARMUPS" "$RUNS" "$QUIET" "$ONLY" \
             "$CONTAINER" "$PP_MODE" "$PP_FALLBACK_TOKENS" "$PP_MAX_TOKENS" \
             "$ENABLE_THINKING" "$FORCE_TOKENS" \
             "$PROMPT_NARR" "$MAX_TOKENS_NARR" \
             "$PROMPT_CODE" "$MAX_TOKENS_CODE" << 'PYEOF'
 import json, os, random, re, shutil, string, subprocess, sys, time, urllib.request, statistics as s
-# the engine's API key (Strata 0.2+), set by scripts/lib/engine-auth.sh when one applies
-_HEADERS = {"Content-Type": "application/json"}
-if os.environ.get("CLUB_ENGINE_API_KEY"):
-    _HEADERS["Authorization"] = "Bearer " + os.environ["CLUB_ENGINE_API_KEY"]
+# every request to the engine goes through scripts/lib/engine_http.py — it resolves the
+# engine's API key (Strata 0.2+) from the URL through the repo's own helpers, lazily.
+sys.path.insert(0, os.environ["CLUB_SCRIPTS_LIB"])
+import engine_http
 
 (URL, MODEL, WARMUPS, RUNS, QUIET, ONLY,
  CONTAINER, PP_MODE, PP_FALLBACK_TOKENS, PP_MAX_TOKENS,
@@ -903,6 +904,43 @@ def _log_lines():
         return 0
 
 
+def _engine_log_lines():
+    """Line count of the engine's log, docker included, or None without one (#1862).
+
+    The decode cross-check compares each shape's measured runs with the engine's
+    own per-request timings over EXACTLY those requests, so it needs the log
+    position before and after them. `_log_lines` above reads only SERVER_LOG (its
+    phase windows feed the moe-cache counters, kept as they are); this one also
+    counts `docker logs`, merged as capture.sh's snapshot merges it, so a position
+    here is a line number in that snapshot. The engine prints a request's timing
+    line as the request finishes, so the count is read once it stops moving."""
+    path = os.environ.get("SERVER_LOG", "")
+
+    def count():
+        if path:
+            with open(path, "rb") as fh:
+                return sum(1 for _ in fh)
+        if CONTAINER and CONTAINER != "none":
+            out = subprocess.run(["docker", "logs", CONTAINER], stdout=subprocess.PIPE,
+                                 stderr=subprocess.STDOUT, timeout=30, check=False).stdout
+            return out.count(b"\n") + (1 if out and not out.endswith(b"\n") else 0)
+        return None
+
+    try:
+        n = count()
+        for _ in range(8):           # settle: up to ~2 s for the last timing line
+            if n is None:
+                break
+            time.sleep(0.25)
+            m = count()
+            if m == n:
+                break
+            n = m
+        return n
+    except Exception:
+        return None
+
+
 def phase_start():
     return time.time(), _log_lines()
 
@@ -944,8 +982,8 @@ def token_ratio():
     try:
         body = json.dumps({"content": sample}).encode()
         req = urllib.request.Request(f"{URL}/tokenize", data=body,
-                                     headers=_HEADERS)
-        with urllib.request.urlopen(req, timeout=20) as r:
+                                     headers=engine_http.headers(URL))
+        with engine_http.urlopen(req, timeout=20) as r:
             obj = json.loads(r.read().decode("utf-8", errors="ignore"))
         toks = obj.get("tokens", obj if isinstance(obj, list) else [])
         if isinstance(toks, list) and toks:
@@ -1019,12 +1057,12 @@ def run_once(prompt, max_tokens, force=0):
         req_body["ignore_eos"] = True
     body = json.dumps(req_body).encode()
     req = urllib.request.Request(f"{URL}{path}", data=body,
-                                 headers=_HEADERS)
+                                 headers=engine_http.headers(URL))
     t_send = time.time()
     ttft = None
     completion_tokens = 0
     prompt_tokens = 0
-    with urllib.request.urlopen(req, timeout=600) as r:
+    with engine_http.urlopen(req, timeout=600) as r:
         for line in r:
             line = line.decode("utf-8", errors="ignore").rstrip()
             if not line.startswith("data: "):
@@ -1219,6 +1257,8 @@ def run_set(label, prompt, max_tokens):
     print(f"\n=== measured ({RUNS}) ===")
     walls, decodes, ttfts, toks_seen = [], [], [], []
     ptoks_seen = []          # prompt size per run — the #817 plausibility gate needs it
+    decode_runs = []         # [decode_tps, tokens] per measured run, for the cross-check (#1862)
+    xc_lines = [_engine_log_lines(), None] if SUMMARY_JSON else [None, None]
     degen_runs = 0           # runs with a zero-width decode window (#809)
     errors = 0
     mt = FORCE if FORCE > 0 else max_tokens
@@ -1240,12 +1280,15 @@ def run_set(label, prompt, max_tokens):
                 degen_runs += 1
             else:
                 decodes.append(dtps)
+                decode_runs.append([dtps, k])
             toks_seen.append(k); ptoks_seen.append(ptk)
         except Exception as e:
             errors += 1
             print(f"  run-{i+1}  FAIL: {e}")
             progress(f"[bench] {label} run {i+1}/{RUNS}: FAIL: {e}")
     mark_phase("decode", phase_t0)
+    if SUMMARY_JSON:
+        xc_lines[1] = _engine_log_lines()
     # Item 2: a chat-tuned model answers briefly and EOSes. The per-shape stats
     # then silently describe whichever one or two runs happened to run long — a
     # 5-run shape degenerates to n=1 while still printing "n=5". Count the runs
@@ -1275,6 +1318,8 @@ def run_set(label, prompt, max_tokens):
         "decode_granularity": gran,
         "ttft_mean_ms": (s.mean(ttfts) * 1000 if ttfts else 0.0),
         "ttft_std_ms": (s.stdev(ttfts) * 1000 if len(ttfts) > 1 else 0.0),
+        "decode_runs": decode_runs,
+        "log_lines": xc_lines,
     }
     if walls:
         print(f"\n=== summary [{label}] (n={len(walls)}) ===")
@@ -1729,7 +1774,10 @@ if (( CAP_ENABLED )); then
           *)  echo "  ${_l}  (tok/s, from the server's own print_timing)" ;;
         esac
       done <<< "$_tim"
-      _eng="$(printf '%s\n' "$_tim" | command grep -m1 '^decode ' | command grep -oE 'median=[0-9.]+' | cut -d= -f2 || true)"
+      # The cross-check compares the SAME requests on both sides, one shape at a time:
+      # cap_decode_crosscheck (lib/capture.sh, #1862).
+      # `_cli` is the run's client-side decode figure for the status enum below (CAP_TPS), the
+      # mean of the shapes' means as before; the cross-check no longer compares against it.
       _cli="$(python3 -c '
 import json, sys
 try:
@@ -1741,13 +1789,11 @@ xs = [v.get("decode_tps_mean", 0) for v in shapes
       if v.get("decode_tps_mean") and not v.get("decode_derived")]
 print(f"{sum(xs)/len(xs):.2f}" if xs else "")
 ' "$CAP_WORK/summary.json" 2>/dev/null || true)"
-      if [[ -n "$_eng" && -n "$_cli" ]]; then
-        _div="$(cap_divergence_pct "$_eng" "$_cli" || true)"
-        if [[ -n "$_div" ]]; then
-          echo "  cross-check: client-observed ${_cli} vs engine-side ${_eng} tok/s -> ${_div}% divergence"
-          awk -v d="$_div" 'BEGIN{ if (d+0 > 5) print "  ⚠ WARN: >5% divergence. One of these two is not measuring what its label\n          says. State WHICH number a card quotes, and why." }'
-        fi
-      fi
+      _xc="$(cap_decode_crosscheck "$CAP_WORK/summary.json")"
+      [[ -n "$_xc" ]] && printf '%s\n' "$_xc"
+      # the card's integrity.divergence: the worst shape
+      _div="$(printf '%s\n' "$_xc" | command grep -oE -- '-> [0-9.]+% divergence' \
+        | awk '{ v = $2; sub(/%/, "", v); if (v + 0 > m + 0) m = v } END { if (NR) print m }' || true)"
     else
       echo "  no print_timing lines in the log (engine may not emit them at this verbosity)"
     fi
@@ -2082,7 +2128,7 @@ for name, v in d.get("shapes", {}).items():
     card_kv "$CARD_REC" fp.slots         "$(cap_props_get 'total_slots' || true)"
     card_kv "$CARD_REC" fp.ftype         "$(cap_props_get 'model_ftype' || true)"
     card_kv "$CARD_REC" fp.drafter       "$(cap_props_get 'default_generation_settings.params.speculative.types' || true)"
-    card_kv "$CARD_REC" fp.kv            "$(cap_kv_type "$CAP_ARGV" || true)"
+    card_kv "$CARD_REC" fp.kv            "$(cap_kv_type "$CAP_ARGV" "$ENGINE_KIND" || true)"
     card_kv "$CARD_REC" fp.argv          "$(cap_argv_fingerprint "$CAP_ARGV" 2>/dev/null || true)"
     card_kv "$CARD_REC" fp.moe           "$(cap_moe_cache_config "$CAP_ARGV" || true)"
     card_kv "$CARD_REC" fp.offload       "${CAP_OFFLOAD_DESC:-}"
@@ -2271,6 +2317,20 @@ bench_interconnect_block() {
     echo "  layer 2  NCCL use         : n/a — ExLlamaV3 layer-split does not use NCCL collectives"
     echo "  layer 3  engine custom-AR : n/a — ExLlamaV3 layer-split; no custom all-reduce kernel"
     echo "  verdict  : ℹ interconnect capability is reported above; ExLlamaV3's layer-split transport is engine-specific and is not measured by the NCCL/custom-AR probes"
+    return 0
+  fi
+  # QEngine runs its own collectives and links no NCCL; its log says what it chose, and
+  # p2p_qengine_transport (lib/p2p-state.sh, shared with report.sh) reads it. The classifier below
+  # reads vLLM / SGLang lines and finds none.
+  if [[ "$ENGINE_KIND" == "qengine" ]]; then
+    echo "  layer 2  NCCL use         : n/a — QEngine runs its own collectives (no NCCL)"
+    if [[ "${CONTAINER:-}" != "none" ]] && command -v docker >/dev/null 2>&1 \
+       && docker inspect "${CONTAINER}" >/dev/null 2>&1; then
+      echo "  layer 3  engine transport : $(docker logs "$CONTAINER" 2>&1 | p2p_qengine_transport)"
+    else
+      echo "  layer 3  engine transport : n/a — no container to read QEngine's log from"
+    fi
+    echo "  verdict  : ℹ interconnect capability is reported above; QEngine's transport is its own and is not measured by the NCCL/custom-AR probes"
     return 0
   fi
 

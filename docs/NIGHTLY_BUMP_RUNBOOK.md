@@ -255,6 +255,12 @@ does, and what to do by hand when it refuses.
   `MODEL`, `FAMILY`, `MODEL_PATH`, `CONTEXT`, `KV`, `VISION`, `GPUS`, `PRESET`, `API_KEY`), the run config setup writes
   (`/data/install/strata-<family>.json`, where `launcher/strata_config.py` puts the launch settings) and how setup
   keeps an option it doesn't choose itself (`user_args`). Re-read the release notes for those.
+- The composes forward a short list of Strata's own engine switches (`STRATA_GDN_TC`, `STRATA_GDN_CONVL2`;
+  docs/engines/STRATA.md, "Engine switches"). When a release turns on a new default that reaches our slugs and names
+  the variable that turns it off, add that variable to all five composes and to `ENGINE_EXACT` in
+  `test-compose-env-declared-unused.sh`, once `strings` on the image's
+  `/opt/strata/components/engine/<version>/strata` shows the engine reads it. A listed name the engine no longer
+  reads comes out the same way.
 - The data volume (`strata-data-v2`) carries one pack per model family and the shared MTP layer between versions,
   in a folder every topology shares; a release that changes the pack format re-prepares a family's pack at its first
   start in each topology.
@@ -292,15 +298,21 @@ does, and what to do by hand when it refuses.
 
 ### qengine
 
-- Pinned by digest to the author's own `ghcr.io/bpx03/qengine:<release>` (text only; the `:vision` tags add PyTorch).
+- Pinned by digest to the author's own `ghcr.io/bpx03/qengine:<release>-vision` (the engine plus PyTorch for the vision
+  encoder, which the slugs' `VISION` default needs; `:<release>` is the same build without PyTorch).
   Each image's `org.opencontainers.image.revision` label is its source commit, which `lineage.source_ref` records.
-  Registered with no slug yet (2026-10-27): until one exists a bump is only `scripts/engine-pin-bump.sh qengine
-  ghcr.io/bpx03/qengine@sha256:<digest>` and `source_ref`; from the first slug on, boot it on the new digest and run
-  `verify-full` first.
+  A bump is `scripts/engine-pin-bump.sh qengine ghcr.io/bpx03/qengine@sha256:<digest>` and `source_ref`, then a boot
+  of `qengine/qwen38-27b-dual` on the new digest with `verify-full` (the slugs since 2026-10-28; boot
+  `qengine/qwen38-flash-next-dual` too when the release changes the Flash-Next engine).
 - The volatile parts are QEngine's own interfaces: the image's entrypoint and its `QE_*` variables (`QE_GPUS`,
-  `QE_MAX_SEQS`, `QE_RESERVE_GB`, `QE_EXTRA_ARGS`), `server/app.py`'s flags, the model directory it expects
-  (`Qwen3.8-27B-INT4`, RedHatAI's layout, plus the `token_rank.bin` and `model_mtp_ft.safetensors` release assets),
-  and `/v1/models` `owned_by: "qengine"`, which engine-kind.sh reads. ⚠️ PolyForm Noncommercial license.
+  `QE_MODEL`, `QE_MAX_SEQS`, `QE_RESERVE_GB`, `QE_EXTRA_ARGS`) and Flash-Next's `FLASH_*` ones, `server/app.py`'s flags
+  (`--think`, `--mtp-k`) and `QE_REASONING_EFFORT`, the model directories it expects (`Qwen3.8-27B-INT4`, RedHatAI's layout, plus
+  the `token_rank.bin` and `model_mtp_ft.safetensors` release assets; `Qwen3.8-Flash-Next-QE-INT4`, the author's HF
+  folder, which a new release may re-convert), and `/v1/models` `owned_by: "qengine"`, which engine-kind.sh reads.
+- The composes set the default effort with `QE_REASONING_EFFORT` (from 1.3.1) and refuse to start on an image whose
+  `server/app.py` doesn't read it: a new image that drops or renames it stops the boot there, on purpose. Read its
+  `--reasoning-effort` help before adapting the compose; the template's own default is `xhigh`.
+  ⚠️ PolyForm Noncommercial license.
 
 ### Luce DFlash / xtransformers / future engines
 

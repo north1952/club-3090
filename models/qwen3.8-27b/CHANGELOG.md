@@ -2,6 +2,81 @@
 
 Dated history for Qwen3.8-27B configs in this repo. Append-only — add a new entry, don't rewrite past ones.
 
+## 2026-10-31 — HyperQwen moves to commit f382342d
+
+`vllm-hyperqwen/qwen38-27b-single-ultrafast` now runs syv-ai's `:sha-f382342` (commit
+`f382342d`; was `6cd7265d`), still vLLM 0.32.0. The nine commits add an opt-in prefill path for
+long `CTX=long` prompts on the pth-flash-attn INT8 cache (bounded FA2 slabs, syv-ai/HyperQwen#386,
+with a fix for vLLM 0.32's warm-up stream), off unless `PTH_FA2_SLAB_PREFILL=1` and only with
+`MAX_SEQS=1`, plus documentation. Neither reaches this slug's default (`CTX=fast`, bf16 KV), and
+the compose forwards neither setting.
+The default setup is unchanged: on the reference rig it boots in 299 s (a cold first start on
+the new image) on the same backend (FLASH_ATTN, bf16 KV, 64K, prefix caching on), with
+`reasoning_effort` low, and passes verify-full with a DFlash2 acceptance length of 3.90.
+Boot test only: no new throughput numbers.
+
+## 2026-10-30 — HyperQwen moves to commit 6cd7265d, on vLLM 0.32.0
+
+`vllm-hyperqwen/qwen38-27b-single-ultrafast` now runs syv-ai's `:sha-6cd7265` (commit
+`6cd7265d`; was `ce9615c4`). HyperQwen moved its base from vLLM 0.31.0 to 0.32.0 and re-cut
+its patch series against it: 56 patches, up from 51. Five are new: the 0.32 re-cuts, a
+FlashInfer async barrier, a DFlash context-capacity check, Mamba-state KV sizing and
+streamed-usage updates. One fix now ships in vLLM 0.32 and was dropped.
+The image also builds xgrammar with a fix for tool string parameters that carry a
+`maxLength`. HyperQwen's default `TOOL_STRICT=parameter` reaches that path, where syv-ai
+measured decode falling to ~7 tok/s on the released xgrammar.
+The default setup is unchanged: on the reference rig it boots in 295 s (a cold first start
+on the new image) on the same backend (FLASH_ATTN, bf16 KV, 64K, prefix caching on), with
+`reasoning_effort` low, and passes verify-full with a DFlash2 acceptance length of 3.84.
+Boot test only: no new throughput numbers.
+
+## 2026-10-28 — GPU Unlock comparison on `dual-max`
+
+The [Qwen3.8 dual-card vLLM benchmark row](../../BENCHMARKS.md#qwen38-27b) records
+@eddietheengineer's mixed RTX 3090 + RTX 3090 Ti comparison with GPU Unlock OFF
+versus ON ([#1755](https://github.com/noonghunna/club-3090/issues/1755)).
+[GPU Unlock](https://github.com/Zagitta/gpu-unlock) lifts GeForce cards' half-rate cap
+on FP16 / BF16 / TF32 tensor-core math with FP32 accumulation, at boot. On the
+reported PCIe P2P, no-NVLink rig, fp8 KV and MTP decode stayed within the stated
+noise band, while prefill improved **14.5% at 10K / 18.4% at 90K**. Peak VRAM
+was unchanged at 46,404 MiB; the 1,496 MiB first-run increase was warmup
+allocation, not a monotonic leak. The baseline is one fresh boot, while the ON
+arm has two repetitions on one boot, so treat this as a prefill-heavy-workload
+comparison rather than a general decode-speed claim.
+
+## 2026-10-28 — HyperQwen moves to commit ce9615c4; CTX=long changes backend
+
+`vllm-hyperqwen/qwen38-27b-single-ultrafast` now runs syv-ai's `:sha-ce9615c` (commit
+`ce9615c4`, still vLLM 0.31.0; was `95ee3b64`). The default setup is unchanged: on the
+reference rig it boots in 288 s (a cold first start on the new image) on the same backend
+(FLASH_ATTN, bf16 KV, 64K, prefix caching on), with `reasoning_effort` low, and passes
+verify-full with a DFlash2 acceptance length of 3.42. Boot test only: no new throughput numbers.
+
+`CTX=long` changed in the image. On a 3090 it now defaults to int8 KV on HyperQwen's own
+pth-flash-attn kernel (`PTH_FA=1`). With any `SPEC_N` but 7, or `PTH_FA=0`, it uses fp8 KV
+through the FA2 fp8-KV plugin our ultrafast tiers use (`FA2_FP8KV=1`). Our measured numbers
+(2026-10-14) are for the old int8-on-Triton arm, which `PTH_FA=0 FA2_FP8KV=0` restores; the
+compose now forwards both. These were checked with `PRINT_ARGV=1`; neither new arm was booted.
+The 2026-10-14 entry's "there is no fp8 KV" no longer holds on this image.
+## 2026-10-21 — Swift 1.5 (UkisAI fine-tune) single-card slug
+
+New curated slug `llamacpp/qwen38-27b-swift15-iq3s-mtp`: UkisAI's Swift-1.5
+post-trained (RL+OPD) Qwen3.8-27B as a GSQ-RCO IQ3_S-mtp GGUF (12.12 GB, MTP
+head embedded — 866 tensors) plus ukisai's F16 projector, single card,
+`llama-cpp-local`. Compose default: q4_0 KV @262144, projector on GPU, MTP
+n=2, and Swift's own GGUF template with an effort mapping (high and max ->
+xhigh, minimal -> low; the stock one answers those with HTTP 500). 🧪
+experimental, the status of the sibling it was cloned from. Validated on a
+waterblocked 4090 (450 W — not the 3090 reference rig, and on the stock
+template): verify-full 8/8, verify-stress all pass
+(2,996 MB flat at 91% fill), bench 102.86 / 120.74 decode TPS, prefill
+2,691 @10K, 0 MiB leak; quality --medium 66/75 pass@1; soak PASS. Same-card
+A/B against the base IQ4_XS at the same standard config: +11% / +8% decode,
+−5% prefill, 1.7 GiB less VRAM. The thinking-reduction claim (58.5% fewer
+thinking tokens, [ukisai.com/swift-1-5-27b](https://www.ukisai.com/swift-1-5-27b))
+is UkisAI's, not independently reproduced here. ⚠️ Swift Open License 1.0:
+commercial use only below US$1M annual revenue.
+
 ## 2026-10-19 — SGLang slugs move to v0.5.22
 
 The `sgl/` slugs now run `lmsysorg/sglang:v0.5.22` (was v0.5.21). Both SGLang patches carry

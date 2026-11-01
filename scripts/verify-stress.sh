@@ -75,6 +75,11 @@
 #                          8192 reasoning tokens at ~12 tok/s needs ~700s+,
 #                          so the default times out a HEALTHY server there.
 #                          Same pattern as verify-full's VERIFY_LONG_TIMEOUT.
+#   N_CTX                  The server's context length in tokens, for the
+#                          ceiling ladder. Wins over detection; needed when
+#                          the server reports it nowhere (no /props n_ctx, no
+#                          max_model_len in /v1/models, no docker inspect
+#                          flag), or the ladder is skipped (#1826).
 #   CEILING_FRACTION       Fraction of n_ctx to target for the top ceiling
 #                          rung (default: 0.92). Lower to test a safer fill.
 #   CEILING_STEP_TOKENS    Token increment between ceiling ladder rungs
@@ -363,6 +368,12 @@ if [[ -f "${ROOT_DIR}/scripts/lib/registry-lookup.sh" ]]; then
   _DEFAULT_ENDPOINT_PORT="$(registry_lookup_default_port qwen3.6-27b 2>/dev/null || true)"
 fi
 URL="${URL:-http://localhost:${_DEFAULT_ENDPOINT_PORT:-8020}}"
+# The engine's API key (Strata 0.2+): the URL is the only input — club_container_for_url
+# answers which container publishes it, engine-auth.sh which key (no per-script rules).
+# This shell's curl probes below and the python helpers both need it.
+# shellcheck source=lib/engine-auth.sh
+source "${ROOT_DIR}/scripts/lib/engine-auth.sh"
+club_engine_auth_enable_for_url "$URL"
 # Resolve the served model from /v1/models when MODEL is unset (#372).
 declare -F preflight_autodetect_model >/dev/null && preflight_autodetect_model
 # #1330: NOT an unconditional `MODEL="${MODEL:-…}"` any more. That fell back to
@@ -440,7 +451,7 @@ else
 fi
 
 pass() { printf "  \033[32m✓\033[0m %s\n" "$1"; }
-fail() { printf "  \033[31m✗\033[0m %s\n" "$1"; printf "    \033[33m→\033[0m %s\n" "$2"; return 1; }
+fail() { printf "  \033[31m✗\033[0m %s\n" "$1"; printf "    \033[33m→\033[0m %s\n" "$2"; [[ -n "${_FAIL_REASON:-}" ]] || _FAIL_REASON="$1"; return 1; }
 
 # completion_tokens_of — read a chat-completion body on stdin and print
 # "<count> <source>": the engine's usage.completion_tokens ("usage"), or, when the
@@ -463,13 +474,30 @@ else:
     print(len(text) // 4, "estimated" if text else "usage")' 2>/dev/null || echo "0 unparseable"
 }
 _SKIPPED=0
-skip() { printf "  \033[33m⊘\033[0m %s (skipped)\n" "$1"; _SKIPPED=1; }
+_SKIP_REASON=""
+# Checks that did not run, as "label: reason", for the summary (#1826): a run that
+# skipped one must not end on "paths are sound". `skip <msg> covered` marks a skip
+# whose ground another check already covers (a small n_ctx that probe 7 spans).
+SKIPPED_CHECKS=()
+# Checks that failed, as "label: first fail() message", named under the summary's count: a
+# bare "1 stress check(s) failed" under two all-green buckets left the reader to find it (#1826).
+# The VRAM margin goes in ADVISORY_CHECKS and prints with ⚠, never ✗: report.sh reads a
+# nonzero exit with no ✗ and a margin line as ADVISORY (exit 2), not a failure.
+_FAIL_REASON=""
+FAILED_CHECKS=()
+ADVISORY_CHECKS=()
+skip() {
+  printf "  \033[33m⊘\033[0m %s (skipped)\n" "$1"; _SKIPPED=1
+  [[ "${2:-}" == covered ]] || _SKIP_REASON="$1"
+}
 
 FAILED=0
 # The summary is split into two verdicts because this script answers two
 # DIFFERENT questions and they carry different weight (#1017):
 #   BOUNDARY — does the deployed config survive its edges (tool-prefill OOM,
-#              agent shapes, reasoning-heavy, VRAM ceiling)? Unambiguous.
+#              agent shapes, reasoning-heavy, VRAM ceiling)? Unambiguous. The
+#              VRAM ceiling runs inside the ladder and books itself here
+#              (vram_margin_check).
 #   RECALL   — does the needle come back at depth? Real, but measured against a
 #              haystack built from ONE repeated block (~0.03% unique content at
 #              380K), so it establishes ADDRESSABILITY, not retrieval quality,
@@ -481,9 +509,16 @@ BOUND_RUN=0;    BOUND_FAIL=0
 run_check() {
   local label="$1"; shift
   local rc=0
-  _SKIPPED=0
-  if "$@"; then :; else rc=1; FAILED=$((FAILED + 1)); fi
-  if [[ "$_SKIPPED" == "1" ]]; then return 0; fi   # skipped checks count in neither bucket
+  _SKIPPED=0; _SKIP_REASON=""; _FAIL_REASON=""
+  if "$@"; then :; else
+    rc=1; FAILED=$((FAILED + 1))
+    # the label once: "ceiling_ladder: wall at …", not "ceiling_ladder: ceiling ladder: wall at …"
+    FAILED_CHECKS+=("${label}${_FAIL_REASON:+: ${_FAIL_REASON#"${label//_/ }: "}}")
+  fi
+  if [[ "$_SKIPPED" == "1" ]]; then                # skipped checks count in neither bucket
+    [[ -z "$_SKIP_REASON" ]] || SKIPPED_CHECKS+=("${label}: ${_SKIP_REASON}")
+    return 0
+  fi
   if [[ "$_RECALL_CHECKS" == *" $label "* ]]; then
     RECALL_RUN=$((RECALL_RUN + 1)); [[ "$rc" == "1" ]] && RECALL_FAIL=$((RECALL_FAIL + 1))
   else
@@ -497,12 +532,15 @@ run_check() {
 # always saying "Check: docker logs $CONTAINER" — meaningless to a host-build
 # llama.cpp user. Engine class is detected once at startup and cached.
 detect_engine() {
-  # /props is not llama.cpp's alone: TabbyAPI and Strata serve a compatible one, so a
-  # container name or image that names a family wins, as in verify-full.sh.
+  # /props is not llama.cpp's alone: TabbyAPI, Strata and QEngine (from 1.3.1) serve a compatible
+  # one, so a container name or image that names a family wins, then what the server calls itself
+  # (/v1/models owned_by, the only name a host-run QEngine has), as in verify-full.sh.
   if curl -sf -m 3 "${URL}/props" >/dev/null 2>&1; then
     local _props_kind
     _props_kind="$(engine_kind_from_container "$CONTAINER")"
     [[ "$_props_kind" == "unknown" ]] && _props_kind="$(engine_kind_from_image "$(docker inspect --format '{{.Config.Image}}' "$CONTAINER" 2>/dev/null)")"
+    [[ "$_props_kind" == "unknown" ]] && _props_kind="$(engine_kind_from_owned_by "$(curl -sf -m 5 "${URL}/v1/models" 2>/dev/null \
+      | python3 -c "import sys,json; print(((json.load(sys.stdin).get('data') or [{}])[0] or {}).get('owned_by','') or '')" 2>/dev/null)")"
     [[ "$_props_kind" != "unknown" ]] && { echo "$_props_kind"; return 0; }
     echo "llamacpp"; return 0
   fi
@@ -517,7 +555,12 @@ detect_engine() {
   # Container-name fallback. sglang-*/sgl-* added club-3090#1261; the arms
   # themselves now live in scripts/lib/engine-kind.sh (club-3090#1282) so a new
   # engine is added in ONE place — see the long note in verify-full.sh.
-  engine_kind_from_container "$CONTAINER"
+  k="$(engine_kind_from_container "$CONTAINER")"
+  [[ "$k" != "unknown" ]] && { echo "$k"; return 0; }
+  # Last, /v1/models' owned_by, which needs no container: a host-run QEngine (CONTAINER=none) sends
+  # no fingerprint, and before 1.3.1 served no /props either, so only this named it (#1826).
+  engine_kind_from_owned_by "$(curl -sf -m 5 "${URL}/v1/models" 2>/dev/null \
+    | python3 -c "import sys,json; print(((json.load(sys.stdin).get('data') or [{}])[0] or {}).get('owned_by','') or '')" 2>/dev/null)"
   return 0
 }
 ENGINE_KIND="$(detect_engine)"
@@ -563,8 +606,12 @@ esac
 # --------------------------------------------------------------------
 send_streaming_niah() {
   local _req_file="$1" _result_file="$2" _url="$3" _timeout="$4"
-  python3 - "$_req_file" "$_result_file" "$_url" "$_timeout" <<'PYEOF'
+  CLUB_SCRIPTS_LIB="${ROOT_DIR}/scripts/lib" python3 - "$_req_file" "$_result_file" "$_url" "$_timeout" <<'PYEOF'
 import json, os, sys, time, urllib.request, urllib.error
+# every request to the engine goes through scripts/lib/engine_http.py — it resolves the
+# engine's API key (Strata 0.2+) from the URL through the repo's own helpers, lazily.
+sys.path.insert(0, os.environ["CLUB_SCRIPTS_LIB"])
+import engine_http
 
 req_file, result_file, url, timeout_s = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])
 
@@ -579,7 +626,7 @@ body = json.dumps(req).encode("utf-8")
 http_req = urllib.request.Request(
     f"{url}/v1/chat/completions",
     data=body,
-    headers={"Content-Type": "application/json"},
+    headers=engine_http.headers(url),
 )
 
 t_send = time.time()
@@ -590,7 +637,7 @@ timings = None
 result = {"http_code": 0, "error": None}
 
 try:
-    with urllib.request.urlopen(http_req, timeout=timeout_s) as resp:
+    with engine_http.urlopen(http_req, timeout=timeout_s) as resp:
         result["http_code"] = resp.getcode() or 200
         for raw_line in resp:
             line = raw_line.decode("utf-8", errors="ignore").rstrip()
@@ -1361,6 +1408,13 @@ ensure_engine_alive "probe 7 (large rungs)" || true
 get_n_ctx() {
   local n_ctx=0
 
+  # An explicit N_CTX wins: the one way to run the ladder on a server that reports
+  # its context length nowhere (#1826). check_ceiling_ladder refuses a malformed one.
+  if [[ "${N_CTX:-}" =~ ^[1-9][0-9]*$ ]]; then
+    echo "$N_CTX"
+    return 0
+  fi
+
   # llama.cpp: GET /props → default_generation_settings.n_ctx
   # Real llama.cpp nests n_ctx inside default_generation_settings, NOT at
   # top-level. Top-level d.get('n_ctx') returns None → 0.
@@ -1414,6 +1468,16 @@ except Exception:
 " 2>/dev/null || echo 0)"
   fi
 
+  # QEngine reports its context neither in /props nor in /v1/models, and the compose passes no
+  # flag for it (server/app.py's --max-ctx defaults to 262144), so only its boot log says it (#1846):
+  # "KV pool: … (max context N)" (27B) or "[qflash Ns] ready, context N" (Flash-Next); the last boot's.
+  if [[ "${n_ctx:-0}" -le 0 && -n "${CONTAINER:-}" && "${CONTAINER:-}" != "none" ]] \
+     && command -v docker >/dev/null 2>&1 \
+     && [[ "$(docker inspect "$CONTAINER" --format '{{.Config.Image}}' 2>/dev/null || true)" == *qengine* ]]; then
+    n_ctx="$(docker logs "$CONTAINER" 2>&1 | command grep -oE '(max context|ready, context) [0-9]+' | tail -1 \
+      | command grep -oE '[0-9]+$' || true)"
+  fi
+
   echo "${n_ctx:-0}"
 }
 
@@ -1428,7 +1492,9 @@ except Exception:
 #      Count: -1 (compose `count: all`) -> ALL host GPUs, no warning
 #   2. Container env CUDA_VISIBLE_DEVICES ('all' -> ALL)
 #   3. Container env NVIDIA_VISIBLE_DEVICES (numeric, or 'all' -> ALL)
-#   4. Fallback: min over all GPUs with a warning (genuinely undetermined)
+#   4. Fallback: min over all GPUs with a warning (genuinely undetermined), said
+#      once: the ladder sets _VRAM_GPU_WARNED after its first read, and the
+#      per-rung reads (each a $(…) subshell) inherit it (#1826)
 # Aggregation is MIN free across the model's GPUs (TP OOMs on the first card
 # to run out — a sum overstates dual-rig margins ~2x; corrected 2026-07-04).
 # Returns 0 when nvidia-smi is unavailable.
@@ -1499,11 +1565,33 @@ except Exception:
     # Genuinely undetermined (no docker, exotic env) — min over all, flagged
     local total_gpus
     total_gpus="$(nvidia-smi --query-gpu=index --format=csv,noheader 2>/dev/null | wc -l)"
-    if [[ "$total_gpus" -gt 1 ]]; then
+    if [[ "$total_gpus" -gt 1 && -z "${_VRAM_GPU_WARNED:-}" ]]; then
       echo "    [vram] WARN: could not determine model GPU(s) on ${total_gpus}-GPU host — using min free across all" >&2
     fi
     nvidia-smi --query-gpu=memory.free --format=csv,noheader,nounits 2>/dev/null \
       | awk 'NR==1||$1<m{m=$1} END {printf "%.0f\n", m}' 2>/dev/null || echo 0
+  fi
+}
+
+# The VRAM-ceiling boundary check (#184), on free VRAM at the ladder's deepest rung. It
+# runs inside a RECALL check (the ladder) but is a BOUNDARY verdict, so it books itself
+# in that bucket and names itself for the summary, as an advisory (see ADVISORY_CHECKS).
+# It used to bump FAILED alone: a run whose buckets read 5/5 and 3/3 then ended
+# "1 stress check(s) failed" (#1826).
+# Args: free MB before the ladder (0 = unknown), free MB at the ceiling, threshold MB,
+# fill % of the deepest rung.
+vram_margin_check() {
+  local before="$1" after="$2" margin="$3" pct="$4"
+  BOUND_RUN=$((BOUND_RUN + 1))
+  if [[ "$after" -lt "$margin" ]]; then
+    printf "    \033[33m⚠\033[0m VRAM margin thin at ceiling: %s MB free < %s MB threshold\n" "$after" "$margin"
+    echo "      Recall succeeded at ${pct}% fill, but sustained agent load also carries"
+    echo "      prompt-cache + context-checkpoint overhead (~292 MiB, see #197)."
+    echo "      Agent users should target a CTX_SIZE where margin ≥ ${margin} MB at this depth."
+    BOUND_FAIL=$((BOUND_FAIL + 1)); FAILED=$((FAILED + 1))
+    ADVISORY_CHECKS+=("vram_margin: ${after} MB free at the ceiling, under the ${margin} MB threshold (VRAM_MARGIN_MB): headroom, not correctness")
+  elif [[ "$before" -gt 0 ]]; then
+    echo "    VRAM: ${before} → ${after} MB (Δ -$(( before - after )) MB across ladder, margin threshold=${margin} MB)"
   fi
 }
 
@@ -1523,20 +1611,26 @@ check_ceiling_ladder() {
   local ceiling_start="${CEILING_START_TOKENS:-95000}"
   local vram_margin_mb="${VRAM_MARGIN_MB:-1024}"
 
-  # Step 1: detect context window
+  # Step 1: detect context window (N_CTX, when set, wins)
+  if [[ -n "${N_CTX:-}" && ! "${N_CTX}" =~ ^[1-9][0-9]*$ ]]; then
+    fail "ceiling ladder: N_CTX='${N_CTX}' is not a positive whole number of tokens" \
+         "Set N_CTX to the server's context length (e.g. N_CTX=262144), or unset it to detect it."
+    return 1
+  fi
   local n_ctx
   n_ctx="$(get_n_ctx)"
   if [[ "${n_ctx:-0}" -le 0 ]]; then
-    skip "could not detect n_ctx from endpoint (no /props, no /v1/models max_model_len, no docker inspect)"
+    skip "could not detect n_ctx from endpoint (no /props, no /v1/models max_model_len, no docker inspect, no QEngine boot log); set N_CTX=<the server's context length> to run it (a QEngine container's log is read when it isn't CONTAINER=none, which rebench-full.sh --url sets)"
     return 0
   fi
+  [[ -z "${N_CTX:-}" ]] || echo "    n_ctx from N_CTX=${N_CTX} (not detected from the server)"
 
   # Step 2: build the ladder — from ceiling_start to ceiling_fraction*n_ctx
   local ceiling_top
   ceiling_top="$(python3 -c "print(int(${n_ctx} * ${ceiling_fraction}))")"
   # If the compose is small enough that probe 7 already covers it, skip
   if [[ "$ceiling_top" -le "$ceiling_start" ]]; then
-    skip "n_ctx=${n_ctx} → ceiling target ${ceiling_top} ≤ start ${ceiling_start} (probe 7 already covers this range)"
+    skip "n_ctx=${n_ctx} → ceiling target ${ceiling_top} ≤ start ${ceiling_start} (probe 7 already covers this range)" covered
     return 0
   fi
 
@@ -1624,7 +1718,7 @@ with open('${cal_req}', 'w') as f:
   local last_pass_tokens=0 last_pass_pct=0
   local first_fail_tokens=0 first_recall_miss_tokens=0 first_recall_miss_pct=0
   local vram_before_all vram_after_all
-  vram_before_all="$(get_vram_free_mb)"
+  vram_before_all="$(get_vram_free_mb)"; _VRAM_GPU_WARNED=1
   if [[ "$vram_before_all" -gt 0 ]]; then
     echo "    VRAM free (ladder start): ${vram_before_all} MB"
   fi
@@ -1835,15 +1929,18 @@ with open('${cal_req}', 'w') as f:
       else
         echo "    VRAM: ${vram_after_all} MB free at ceiling. Strata keeps only its --vram-reserve-mib free by design (its expert cache takes the rest), so the ${vram_margin_mb} MB margin check doesn't apply"
       fi
-    elif [[ "$vram_after_all" -gt 0 && "$vram_after_all" -lt "$vram_margin_mb" ]]; then
-      printf "    \033[33m⚠\033[0m VRAM margin thin at ceiling: %s MB free < %s MB threshold\n" "$vram_after_all" "$vram_margin_mb"
-      echo "      Recall succeeded at ${last_pass_pct}% fill, but sustained agent load also carries"
-      echo "      prompt-cache + context-checkpoint overhead (~292 MiB, see #197)."
-      echo "      Agent users should target a CTX_SIZE where margin ≥ ${vram_margin_mb} MB at this depth."
-      FAILED=$((FAILED + 1))
-    elif [[ "$vram_before_all" -gt 0 && "$vram_after_all" -gt 0 ]]; then
-      local total_drop=$(( vram_before_all - vram_after_all ))
-      echo "    VRAM: ${vram_before_all} → ${vram_after_all} MB (Δ -${total_drop} MB across ladder, margin threshold=${vram_margin_mb} MB)"
+    elif [[ "${ENGINE_KIND:-}" == "qengine" && "$vram_after_all" -gt 0 ]]; then
+      # QEngine allocates its KV pool (and, on Flash-Next, its expert cache) at load, so free VRAM is set
+      # at start and doesn't move with the context: measured 763 -> 763 MB across a 120K ladder (27B) and
+      # 3 -> 3 MB across 240K (Flash-Next, 4 slots), 2026-10-29. The absolute check would measure that
+      # allocation, not context headroom (#1826); the ladder's own drop is the number that means something.
+      if [[ "$vram_before_all" -gt 0 ]]; then
+        echo "    VRAM: ${vram_before_all} → ${vram_after_all} MB (Δ -$(( vram_before_all - vram_after_all )) MB across ladder). QEngine allocates its KV pool and expert cache at load, so the ${vram_margin_mb} MB margin check doesn't apply"
+      else
+        echo "    VRAM: ${vram_after_all} MB free at ceiling. QEngine allocates its KV pool and expert cache at load, so the ${vram_margin_mb} MB margin check doesn't apply"
+      fi
+    elif [[ "$vram_after_all" -gt 0 ]]; then
+      vram_margin_check "$vram_before_all" "$vram_after_all" "$vram_margin_mb" "$last_pass_pct"
     fi
   elif [[ "$any_pass" == "1" && "$any_fail" == "1" ]]; then
     local recall_note=""
@@ -1911,11 +2008,26 @@ if [[ -n "${CACHE_CONTAMINATED_LIST}" ]]; then
   printf "    %s→ vllm:prefix_cache_hits_total rose during those rungs — their prefill numbers are inflated; treat as upper bounds (#1017)%s\n" "$_c_dim" "$_c_off"
 fi
 echo ""
-if [[ "$FAILED" == "0" ]]; then
+if [[ "$FAILED" == "0" && ${#SKIPPED_CHECKS[@]} -eq 0 ]]; then
   printf "\033[32mAll stress / boundary checks passed.\033[0m KV-cache and prefill paths are sound for the deployed config.\n"
+elif [[ "$FAILED" == "0" ]]; then
+  # Not the line above: a check that never ran proves nothing (#1826). It still
+  # starts "All stress" for the c3 parser, and differs from the line above so
+  # catalog-baseline doesn't read it as a full pass.
+  printf "\033[33mAll stress / boundary checks that ran passed, but %d did not run\033[0m — not a full stress pass:\n" \
+    "${#SKIPPED_CHECKS[@]}"
 else
   printf "\033[31m%d stress check(s) failed.\033[0m See hints above.\n" "$FAILED"
+  for _fc in ${FAILED_CHECKS[@]+"${FAILED_CHECKS[@]}"}; do
+    printf "  \033[31m✗\033[0m failed: %s\n" "$_fc"
+  done
+  for _ac in ${ADVISORY_CHECKS[@]+"${ADVISORY_CHECKS[@]}"}; do
+    printf "  \033[33m⚠\033[0m advisory: %s\n" "$_ac"
+  done
 fi
+for _sk in ${SKIPPED_CHECKS[@]+"${SKIPPED_CHECKS[@]}"}; do
+  printf "  \033[33m⊘\033[0m skipped (not run): %s\n" "$_sk"
+done
 
 # --- per-rig #249 record: stress pass/fail + the validated ctx ceiling --------
 # The ceiling-ladder pass/fail line carries the deepest fillable tokens + n_ctx;

@@ -63,6 +63,7 @@ Most agent sessions on a rig are "make it serve / find out why it doesn't", not 
 | What does the gateway send and receive? | `bash scripts/litellm-log.sh on` … `off` |
 | Is the prompt cache hitting? | `bash scripts/cache-share.sh` |
 | Where are the compile caches and the KV disk tier, and how big? | `bash scripts/settings.sh caches` |
+| Which weights folders does a slug use, where are they really, and who else uses them? Can I free them? | `bash scripts/weights.sh show <slug>`, then `bash scripts/weights.sh remove <slug> --dry-run` (deletes only the recipe's `files:`; refuses shared files, a running container's folder, paths outside the model dir) |
 | A redacted bundle to paste into an issue | `bash scripts/report.sh` (`--full` adds verify / stress / soak / bench) |
 
 ## Upstream issues — single source of truth
@@ -109,12 +110,12 @@ Pin engine images when **either** trigger holds: (1) we vendor patches into the 
 | llama.cpp mainline (`llama-cpp-local`) | none | **digest** of ggml-org's official image — trigger (2): stability-pinned after the #187 rolling-tag crash-loop; zero patches, so bumps are cheap (`engine-pin-bump.sh llama-cpp-local ghcr.io/ggml-org/llama.cpp@sha256:<digest>`) |
 | moe-cache llama.cpp (`llamacpp-club3090-*`) | none (our fork *is* the delta; one profile per release) | **digest** of our own `ghcr.io/noonghunna/llamacpp-club3090` |
 | PrismML llama.cpp (`llama-cpp-prism`) | none | **digest** of `ghcr.io/noonghunna/llamacpp-prism`, a wrapper we build around PrismML's release (an image-provenance exception, `docs/ADDING_ENGINES.md`) |
-| ExLlamaV3 / TabbyAPI (`exllamav3`) | none | **digest** of `ghcr.io/noonghunna/tabbyapi-club3090`, which we build (same exception) |
+| ExLlamaV3 / TabbyAPI (`exllamav3`) | none | **digest** of theroyallab's official `ghcr.io/theroyallab/tabbyapi:cu13`, which their CI builds from `docker/Dockerfile.cu13` on every push to main (until 2026-10-30 we built `tabbyapi-club3090` ourselves from the same Dockerfile) |
 | bucko-vllm (`bucko-vllm`, a third-party vLLM derivative) | `bucko-default-thinking-budget` (`patches.yml`) | **digest** of DominikBucko's official `ghcr.io/dominikbucko/qwen38-flash-next-2x3090` release image |
 | HyperQwen (`vllm-hyperqwen`, a third-party vLLM derivative) | none | **digest** of syv-ai's official `ghcr.io/syv-ai/hyperqwen`, which their CI builds per commit (`:sha-<7>`; no versioned releases) |
 | Strata (`strata`, its own engine) | none (one launcher, not a patch: `models/qwen3.8-flash-next/strata/launcher/`) | **digest** of upstream's official `ghcr.io/niko1221/strata` image (`<release>-cuda13`, published from 0.2.1 on; until 2026-10-20 we built `strata-club3090` ourselves) |
-| QEngine (`qengine`, its own engine for Qwen3.8-27B INT4 on RTX 3090s; registered, no slug yet) | none | **digest** of the author's own `ghcr.io/bpx03/qengine` (its `org.opencontainers.image.revision` label is the source commit) |
-| Project Maya (`strata-maya`, a Strata fork for GLM-5.3-Flash) | none (one launcher, not a patch) | **digest** of `ghcr.io/noonghunna/strata-maya-club3090`, which we build from each upstream release with our own Dockerfile (an image-provenance exception, `docs/ADDING_ENGINES.md`; built and pushed from the maintainer's rig, recipe in `models/glm-5.3-flash/strata-maya/image/`) |
+| QEngine (`qengine`, its own engines for Qwen3.8-27B and Qwen3.8-Flash-Next INT4 on RTX 3090s) | none | **digest** of the author's own `ghcr.io/bpx03/qengine` (its `org.opencontainers.image.revision` label is the source commit) |
+| Project Maya (`strata-maya`, a Strata fork: GLM-5.3-Flash on its `maya` engine, MiniMax-M3.1-Flash on `maya-mm3`, DeepSeek-V4.1-Flash-1017 on `maya-ds4`) | none (a launcher per model, not patches) | **digest** of `ghcr.io/noonghunna/strata-maya-club3090`, which we build from each upstream release with our own Dockerfile (an image-provenance exception, `docs/ADDING_ENGINES.md`; built and pushed from the maintainer's rig, recipe in `models/glm-5.3-flash/strata-maya/image/`) |
 | vLLM + LMCache (`vllm-lmcache`, a third-party derivative) | none | **digest** of `lmcache/vllm-openai` (its tag was re-pushed) |
 | beellama.cpp (`beellama-local`) | none (the fork *is* the delta) | **digest** of Anbeeld's official image. Engine retired 2026-07-27; every slug is deprecated |
 

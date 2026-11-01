@@ -3,7 +3,7 @@
  "engines": {
   "strata": {
    "engine_profile": "scripts/lib/profiles/engines/strata.yml",
-   "verified_image": "ghcr.io/niko1221/strata@sha256:db96cd9b111c930f7deb77444f38f66e53db43af57644a33a9e8a2f05f038360",
+   "verified_image": "ghcr.io/niko1221/strata@sha256:83e37db8625c67b61c579fd7c0f9068f2d831037a937f139c569502b54290998",
    "render": "strata_config",
    "programs": [
     "models/qwen3.8-flash-next/strata/launcher/strata_config.py"
@@ -60,6 +60,8 @@
     "ENABLE_THINKING": "false",
     "THINKING_BUDGET": "256",
     "SPEC_N": "3",
+    "ROPE_SCALING": "yarn",
+    "ROPE_SCALE": "2",
     "TEMP": "0.7",
     "TOP_P": "0.9",
     "TOP_K": "10",
@@ -96,12 +98,14 @@
     "sampling.presence_penalty": "sampling_defaults_from_config()",
     "sampling.repetition_penalty": "sampling_defaults_from_config()",
     "args:--spec": "the engine's own flag: the MTP drafter's verify window",
+    "args:--rope-scaling": "the engine's own flag: RoPE extension past the trained 262144 (none | linear | yarn; `strata --help`)",
+    "args:--rope-scale": "the engine's own flag: the linear/yarn extension factor (`strata --help`)",
     "aliases": "main(): svc.set_aliases(), other names the model answers to (Strata #297), each listed in /v1/models"
    }
   },
   "strata-maya": {
    "engine_profile": "scripts/lib/profiles/engines/strata-maya.yml",
-   "verified_image": "ghcr.io/noonghunna/strata-maya-club3090@sha256:fba8ae1089c8bc72944abab4259be496db4e8ec34ccb064ebe92d6f07f299376",
+   "verified_image": "ghcr.io/noonghunna/strata-maya-club3090@sha256:94ed9078a0aaf41dea4f4e7c834f10d69d88f7d9d28d96f22a3864c971acccb3",
    "render": "maya_prepare",
    "programs": [
     "models/glm-5.3-flash/strata-maya/launcher/maya_settings.py",
@@ -154,7 +158,7 @@
   },
   "strata-maya:ds4": {
    "engine_profile": "scripts/lib/profiles/engines/strata-maya.yml",
-   "verified_image": "ghcr.io/noonghunna/strata-maya-club3090@sha256:fba8ae1089c8bc72944abab4259be496db4e8ec34ccb064ebe92d6f07f299376",
+   "verified_image": "ghcr.io/noonghunna/strata-maya-club3090@sha256:94ed9078a0aaf41dea4f4e7c834f10d69d88f7d9d28d96f22a3864c971acccb3",
    "render": "maya_ds4_prepare",
    "programs": [
     "models/deepseek-v4.1-flash-1017/strata-maya/launcher/ds4_settings.py",
@@ -207,7 +211,7 @@
   },
   "strata-maya:mm3": {
    "engine_profile": "scripts/lib/profiles/engines/strata-maya.yml",
-   "verified_image": "ghcr.io/noonghunna/strata-maya-club3090@sha256:fba8ae1089c8bc72944abab4259be496db4e8ec34ccb064ebe92d6f07f299376",
+   "verified_image": "ghcr.io/noonghunna/strata-maya-club3090@sha256:94ed9078a0aaf41dea4f4e7c834f10d69d88f7d9d28d96f22a3864c971acccb3",
    "render": "maya_mm3_prepare",
    "programs": [
     "models/minimax-m3.1-flash/strata-maya/launcher/mm3_settings.py",

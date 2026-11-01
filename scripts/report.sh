@@ -1285,7 +1285,12 @@ else
     p2p_env="$(docker exec "$CONTAINER" env 2>/dev/null | command grep -E '^(NCCL_P2P|NVLINK_MODE|NCCL_CUMEM)=' | sort)"
     engine_ar_runtime="$(printf '%s\n' "$_p2p_class_stream" | command grep -E 'Custom allreduce is disabled|CustomAllreduce is disabled|CustomAllReduceV2 is disabled|disable_custom_all_reduce=True|\[sglang\]|sglang is using nccl==|All Reduce config:|Setup Custom allreduce failed| cuda graph addresses' || true)"
     echo "**Interconnect / P2P engagement:**"
-    if [[ -n "$nvlink_boot" || -n "$p2p_env" || -n "$engine_ar_runtime" ]]; then
+    if [[ "$ENGINE_KIND" == "qengine" ]]; then
+      # QEngine runs its own collectives and links no NCCL, so none of the lines above exist in its
+      # log and the fallback below would call P2P undetermined while QEngine says what it chose.
+      # Read it with bench.sh's reader (#1862).
+      echo "QEngine runs its own collectives (no NCCL). Its log: $(docker logs "$CONTAINER" 2>&1 | p2p_qengine_transport)."
+    elif [[ -n "$nvlink_boot" || -n "$p2p_env" || -n "$engine_ar_runtime" ]]; then
       echo '```'
       [[ -n "$nvlink_boot" ]] && echo "$nvlink_boot"
       [[ -n "$engine_ar_runtime" ]] && { echo "# engine runtime:"; echo "$engine_ar_runtime"; }
@@ -1304,6 +1309,9 @@ else
     elif [[ "$ENGINE_KIND" == "strata" ]]; then
       echo
       echo "**Interconnect verdict:** ℹ driver P2P capability is reported above; Strata's layer split copies activations between cards itself (no NCCL/custom all-reduce), so the shared engagement verdict is not applicable."
+    elif [[ "$ENGINE_KIND" == "qengine" ]]; then
+      echo
+      echo "**Interconnect verdict:** ℹ driver P2P capability is reported above; QEngine runs its own collectives (no NCCL/custom all-reduce), so the shared engagement verdict is not applicable. Its own transport is the line above."
     else
       _p2p_verdict_line="$(p2p_verdict "$(p2p_gpu_count)" "$(p2p_host_capability)" \
         "$(printf '%s\n%s' "$_p2p_class_stream" "$p2p_env" | p2p_classify_engagement)")"
@@ -1615,8 +1623,9 @@ LAST_STAGE_RUN=""
 #
 # The advisory classifier reads the stage's own output rather than its exit
 # code, because verify-stress exits with the COUNT of failed checks and does not
-# distinguish the classes. `✗` is emitted only by fail(); the margin advisory
-# prints `⚠ VRAM margin thin at ceiling`. So: nonzero exit + no `✗` + a margin
+# distinguish the classes. `✗` marks a failed check only (fail(), and the
+# summary's `✗ failed:` lines); the margin advisory prints `⚠ VRAM margin thin at
+# ceiling`, and `⚠ advisory:` in the summary. So: nonzero exit + no `✗` + a margin
 # line == advisory-only. Read from the RAW output, before redaction.
 STAGE_ROWS=()
 STAGE_WORST=0         # 0 clean · 2 advisory · 1 hard
@@ -1636,6 +1645,16 @@ stage_record() {
   local key="$1" rc="$2" raw="${3:-}" verdict detail advisory=0 hard=0
   if [[ "$rc" -eq 0 ]]; then
     verdict="PASS"; detail="—"
+    # A check the stage could not run (verify-stress's `skipped (not run):` lines,
+    # #1826) is named here, so a PASS that left the ceiling ladder unrun says so.
+    # It doesn't change the verdict or the exit code: what ran, passed.
+    if [[ -n "$raw" && -f "$raw" ]]; then
+      local not_run
+      not_run="$(sed -E 's/\x1b\[[0-9;]*[mK]//g' "$raw" | command grep 'skipped (not run):' \
+        | sed -E 's/^.*skipped \(not run\):[[:space:]]*//' | head -3 | paste -sd';' - \
+        | sed -E 's/;/ · /g')" || true
+      [[ -z "$not_run" ]] || detail="did not run: ${not_run}"
+    fi
   else
     if [[ -n "$raw" && -f "$raw" ]]; then
       hard="$(command grep -c '✗' "$raw" 2>/dev/null || true)"

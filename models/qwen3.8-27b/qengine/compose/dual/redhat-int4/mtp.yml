@@ -1,0 +1,223 @@
+# ===========================================================================
+# Profile (at-a-glance):
+#   Model:     Qwen3.8-27B — RedHatAI INT4 (compressed-tensors W4A16, group 128, symmetric) with
+#              its MTP head, plus QEngine's fine-tuned MTP head and draft vocabulary (its release
+#              assets, unchanged since v1.0; the server downloads them when they're missing)
+#   Engine:    QEngine 1.3.2 (bpx03): its own C++/CUDA engine and server, the author's own image
+#              ghcr.io/bpx03/qengine (source fb1da72d, the :vision image: PyTorch for the encoder)
+#   Topology:  Dual 3090 PCIe (tensor parallel 2; GPU-to-GPU P2P when the driver grants it)
+#   Drafter:   MTP, up to 7 drafts a step (adaptive; SPEC_N sets the most, 0 turns MTP off) + lookup
+#              drafts from the token history
+#   KV:        fp8_e4m3 (QEngine's only K / V format, one shared pool per GPU)
+#   Vision:    yes (VISION=0 turns it off; verify-full vision 4/4, 2026-10-31). The encoder and PyTorch's
+#              CUDA context sit on GPU1, and tensor parallel sizes the KV pool by the smaller card: MEASURED
+#              374,784 -> 289,792 tokens (-23%, still a full 262K context); VISION=0 gives it back
+#   Max ctx:   262144
+#   Genesis:   none
+#   Status:    ⚠️ Production w/ caveats — promoted 2026-10-31 (the full gate on a community rig, #1862)
+#   Caveats:   ⚠️ QEngine is PolyForm Noncommercial 1.0.0: free for non-commercial use only.
+#              The full gate passed on another rig, not this one: eddietheengineer's #1862 (QEngine 1.3,
+#              3090 + 3090 Ti at 260 / 240 W) ran verify-full, verify-stress 8/8 with the ceiling ladder
+#              filled to 240K, both soaks (PASS, 0 MB growth) and the 8-pack (108 / 132 of 150, thinking
+#              off / on); here it has bench and verify-full. 1.3.1 and 1.3.2 were boot-tested. No
+#              thinking-budget cap (THINKING_BUDGET_* are not wired: QEngine has
+#              none). The default effort is low, as on the other Qwen3.8 slugs, through QEngine's
+#              QE_REASONING_EFFORT (its template's own default is xhigh); a request's own effort
+#              still wins, and QEngine's template maps high -> xhigh but minimal and max ->
+#              medium.
+#              Measured 2026-10-28 on two 3090s at 230 W (bench.sh on its own boot): 147.2 / 216.3
+#              decode, 2,430 prefill @10K, 1,786 @90K, MTP acceptance length 3.4, 23.4 GB a card
+#              (BENCHMARKS.md, Qwen3.8-27B); KV pool 374,784 tokens (289,792 with vision, the default from
+#              2026-10-31), P2P for the decode all-reduce.
+#              First start 25 s including the GEMM tuning, later starts 21 s.
+#   Best for:  many concurrent chats on two 3090s (32 slots, full 262K context)
+# ---------------------------------------------------------------------------
+# Requires-min-vram-gb: 24
+# Requires-min-gpu-count: 2
+# Tensor-parallel: 2
+#
+# QEngine (github.com/bpx03/QEngine, Krzysztof Jagus) is an independent engine for this model on
+# RTX 3090s: INT4 GEMV / GEMM kernels, tensor parallel over PCIe with the all-reduces inside the
+# kernels, MTP and lookup drafts, FP8 KV with prefix reuse and a host-RAM archive, continuous
+# batching. Three cards are its tuned configuration; this compose is its measured two-card one,
+# QE_DEVICES=0,1 QE_MAX_SEQS=32 (README "Running on one or two GPUs": ~387K-token KV pool, 32
+# slots, full 262K context). It reads only compressed-tensors weight_packed / weight_scale, so
+# our AutoRound INT4 doesn't load; RedHatAI's checkpoint is the one it is built for.
+#
+#   bash scripts/setup.sh qengine/qwen38-27b-dual
+#   bash scripts/switch.sh qengine/qwen38-27b-dual
+#
+# The two release assets (README "Model files") make the engine faster: without them it drafts from the
+# full vocabulary with the checkpoint's own MTP head (upstream: ~8-9% fewer accepted tokens). From 1.3.2 the
+# server downloads the missing ones at start (0.85 GB, checked against the release's SHA256SUMS) into
+# ~/.cache/qengine/assets, the engine cache mounted below. That cache is kept per image, so each new pin
+# downloads them again, and a start waits up to 2 minutes for it (QE_FETCH_WAIT_S). In the checkpoint's
+# folder they're found first, and nothing is downloaded:
+#   gh release download v1.0 -R bpx03/QEngine -p token_rank.bin -p model_mtp_ft.safetensors -p SHA256SUMS
+#   sha256sum -c SHA256SUMS
+#
+# Knobs (ours, mapped onto QEngine's flags and variables by the entrypoint below):
+#   ENABLE_THINKING   true (default) | false: --think 1 | 0, the default for requests that set none
+#   REASONING_EFFORT  low (default) | medium | xhigh: QE_REASONING_EFFORT, the default effort for requests
+#                     that send none
+#   SPEC_N=<n>        --mtp-k, the most MTP drafts a step (default 7; the engine adapts below it);
+#                     0 = no MTP (lookup drafts stay on; QE_LOOKUP=0 turns them off)
+#   VISION            1 (default) | 0: --vision 1 | 0, image input (OpenAI image_url, Anthropic image blocks)
+# QEngine's own settings, passed through when set (its defaults otherwise):
+#   QE_MAX_SEQS       sequence slots, up to 32 (32 here, the README's two-card setting)
+#   QE_RESERVE_GB     VRAM left outside the KV pool, per card (1.5); a list sets each card
+#   QE_KV_ARCHIVE_GB  pinned host-RAM archive of evicted conversations (32; 0 = off)
+#   QE_PREFIX_GB      host RAM for pinned system-prompt prefixes (8)
+#   QE_MEM_MARGIN_GB  host RAM the archive always leaves free (max(8 GB, 5% of RAM))
+#   QE_P2P            0 forces the host-memory path (auto)
+#   QE_COMM           prefill transfer path: auto (startup probe), p2p, ce, host
+#   QE_COMM_CHECK     rounds of the start-up P2P data check per pair and transport (4; 0 = off)
+#   QE_COMM_TAX_SEVERE, QE_COMM_TAX_1NODE  the P2P co-run tax at which QE_COMM=auto takes the copy
+#                     engine (3.0 on any layout; 1.90 on one NUMA node over a narrow link)
+#   QE_LOOKUP         0 turns lookup drafts off (1)
+#   QE_FETCH_ASSETS   0: no download of missing release assets (1; then only a warning)
+#   QE_FETCH_WAIT_S   seconds a start waits for that download (120; slower, it starts without them and
+#                     the next start uses them; 0 = never wait)
+#   QE_TOKEN_RANK_FILE  the draft-vocabulary file (token_rank.bin in the checkpoint's folder, else the
+#                     downloaded copy)
+#   QE_PRESENCE_PENALTY, QE_FREQUENCY_PENALTY  defaults for sampled requests that send none (0)
+#   QE_LOOP_GUARD_TURNS, QE_LOOP_GUARD_NOTE, QE_LOOP_GUARD_PENALTY  the cross-turn loop guard
+#                     (3, 1, 1.5; 0 turns the guard or its note off)
+#   QE_METRICS_PORT   its dashboard, /metrics and qetop's /api/stats, on 9393 in the container and
+#                     not published: <port> publishes them on 127.0.0.1:<port> only (switch.sh adds
+#                     the mapping); 0 turns the metrics server off
+#   QE_EXTRA_ARGS     more server/app.py flags (--max-ctx, --served-name, ...), after ours
+# `switch.sh --set` saves only our three knobs for this slug; it refuses QEngine's own names, because
+# they aren't catalogued launch settings. Set those for one launch, or for every QEngine slug:
+#   QE_MAX_SEQS=16 bash scripts/switch.sh --force qengine/qwen38-27b-dual
+#   bash scripts/settings.sh set QE_KV_ARCHIVE_GB=8
+services:
+  qengine-qwen38-27b-dual:
+    image: ${QENGINE_IMAGE:-ghcr.io/bpx03/qengine@sha256:3375a4253e677ef073876662af439e5bfc44736b4cfd5e9fb34c1613bb7f8008}
+    # qengine- is the container prefix our tooling discovers the engine by
+    container_name: "${ESTATE_CONTAINER:-qengine-qwen38-27b-dual}"
+    user: "0:${DOCKER_GID:-1000}"
+    restart: ${CLUB3090_RESTART:-unless-stopped}
+    # upstream's docker run: --ipc=host --ulimit memlock=-1 (the engine pins its host-RAM archive)
+    ipc: host
+    ulimits:
+      memlock: -1
+    stop_grace_period: 30s
+    ports:
+      - "${BIND_HOST:-0.0.0.0}:${ESTATE_PORT:-${PORT:-8197}}:8080"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              # the container sees only the chosen cards, numbered 0 and 1 (QE_GPUS below)
+              device_ids: ['${ESTATE_GPUS:-${CUDA_VISIBLE_DEVICES:-0,1}}']
+              capabilities: [gpu]
+    volumes:
+      # RedHatAI's checkpoint at the path QEngine's entrypoint loads by default; the release
+      # assets sit in the same folder (or in the engine cache below, downloaded by the server)
+      - ${MODEL_DIR:-../../../../../../models-cache}/qwen3.8-27b-qengine-int4:/app/models/Qwen3.8-27B-INT4:ro
+      # ~/.cache/qengine: the GEMM tune table, the KV split, stats, logs, the one-engine-per-GPU locks and
+      # (1.3.2 on) the release assets it downloads
+      - ${CLUB3090_ENGINE_CACHE_DIR:-../../../cache}/qengine:/root/.cache/qengine
+    environment:
+      # the cards as the container numbers them (device_ids above picks which)
+      - QE_GPUS=0,1
+      - QE_PORT=8080
+      - QE_MAX_SEQS=${QE_MAX_SEQS:-32}
+      - QE_RESERVE_GB
+      - QE_KV_ARCHIVE_GB
+      - QE_PREFIX_GB
+      - QE_MEM_MARGIN_GB
+      - QE_P2P
+      - QE_COMM
+      - QE_COMM_CHECK
+      - QE_COMM_TAX_SEVERE
+      - QE_COMM_TAX_1NODE
+      - QE_LOOKUP
+      - QE_FETCH_ASSETS
+      - QE_FETCH_WAIT_S
+      - QE_TOKEN_RANK_FILE
+      - QE_PRESENCE_PENALTY
+      - QE_FREQUENCY_PENALTY
+      - QE_LOOP_GUARD_TURNS
+      - QE_LOOP_GUARD_NOTE
+      - QE_LOOP_GUARD_PENALTY
+      - QE_METRICS_PORT
+      - QE_EXTRA_ARGS
+      # our launch knobs, mapped onto QEngine's flags by the entrypoint below
+      - ENABLE_THINKING
+      - REASONING_EFFORT
+      - SPEC_N
+      - VISION
+    entrypoint:
+      - bash
+      - -c
+      - |
+        umask 0002
+        set -euo pipefail
+        _args=()
+        # The model id the Qwen3.8-27B slugs share, so the gateway routes and omp's effort overrides
+        # (scripts/omp-setup.sh) apply; QEngine's own default is qwen3.8-27b-qengine.
+        _args+=( --served-name qwen3.8-27b )
+        # ENABLE_THINKING (our knob) -> --think 1|0, QEngine's default for requests that set none.
+        _think="$${ENABLE_THINKING:-true}"
+        case "$$_think" in
+          true)  _args+=(--think 1) ;;
+          false) _args+=(--think 0) ;;
+          *) echo "[thinking] ENABLE_THINKING='$$_think' must be true or false" >&2; exit 1 ;;
+        esac
+        echo "[thinking] default enable_thinking=$$_think (a request's own setting wins)" >&2
+        # SPEC_N (our knob) -> --mtp-k, the most MTP drafts a step. Unset keeps QEngine's 7.
+        if [ -n "$${SPEC_N:-}" ]; then
+          case "$$SPEC_N" in
+            *[!0-9]*) echo "[spec] SPEC_N='$$SPEC_N' is not a non-negative integer." >&2
+                      echo "[spec] Fix: SPEC_N=<n> sets the most MTP drafts a step; SPEC_N=0 turns MTP off." >&2
+                      exit 1 ;;
+          esac
+          _args+=(--mtp-k "$$SPEC_N")
+          if [ "$$SPEC_N" -eq 0 ]; then
+            echo "[spec] MTP OFF (SPEC_N=0); lookup drafts stay on unless QE_LOOKUP=0" >&2
+          else
+            echo "[spec] MTP ON, at most $$SPEC_N drafts a step (SPEC_N)" >&2
+          fi
+        fi
+        # REASONING_EFFORT (our knob) -> QE_REASONING_EFFORT, QEngine's default effort for requests that
+        # send none (1.3.1 on). Unset, it is its template's own default, xhigh.
+        _reff="$${REASONING_EFFORT:-low}"
+        case "$$_reff" in low|medium|xhigh) : ;; *) echo "[reasoning] REASONING_EFFORT='$$_reff' must be low|medium|xhigh" >&2; exit 1 ;; esac
+        if ! grep -qF QE_REASONING_EFFORT /app/server/app.py; then
+          echo "[reasoning] this image's server/app.py doesn't read QE_REASONING_EFFORT, so the default effort can't be set." >&2
+          echo "[reasoning] Fix: QEngine 1.3.1 or later; see docs/engines/QENGINE.md." >&2
+          exit 1
+        fi
+        export QE_REASONING_EFFORT="$$_reff"
+        echo "[reasoning] default reasoning_effort=$$_reff (QE_REASONING_EFFORT; a request's own effort wins)" >&2
+        # VISION (our knob) -> --vision 1|0: image input, the encoder on the last card. Needs the :vision image
+        # (PyTorch); engines/qengine.yml pins it.
+        _vis="$${VISION:-1}"
+        case "$$_vis" in
+          1) if ! python3 -c 'import importlib.util, sys; sys.exit(importlib.util.find_spec("torch") is None)'; then
+               echo "[vision] VISION=1, but this image has no PyTorch for the vision encoder." >&2
+               echo "[vision] Fix: VISION=0, or QEngine's :<release>-vision image (the one engines/qengine.yml pins)." >&2
+               exit 1
+             fi
+             _args+=(--vision 1) ;;
+          0) _args+=(--vision 0) ;;
+          *) echo "[vision] VISION='$$_vis' must be 1 or 0" >&2; exit 1 ;;
+        esac
+        echo "[vision] image input $$( [ "$$_vis" = 1 ] && echo on || echo off ) (VISION=$$_vis)" >&2
+        # The engine library makes ~/.cache/qengine/locks 0755 whatever the umask; group-writable, the
+        # lock files it leaves in the shared engine cache stay removable by the user.
+        mkdir -p /root/.cache/qengine/locks && chmod g+w /root/.cache/qengine/locks
+        # Ours first, so a flag in QE_EXTRA_ARGS wins (server/app.py takes the last one).
+        export QE_EXTRA_ARGS="$${_args[*]} $${QE_EXTRA_ARGS:-}"
+        exec /usr/local/bin/qengine-entrypoint
+    healthcheck:
+      # The image has no curl. The container's own hostname, not loopback, so a bad bind
+      # address can't look healthy.
+      test: ["CMD-SHELL", "python3 -c \"import os, urllib.request; urllib.request.urlopen('http://' + os.environ['HOSTNAME'] + ':8080/health', timeout=4)\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 1800s

@@ -3,8 +3,8 @@
 #   Model:     Qwen3.8-27B — W4A16 (dbirks compressed-tensors export), prepared by HyperQwen at
 #              the first start: int8 lm_head / embeddings / MTP module, a calibrated draft
 #              vocabulary, and the single-user "fast" variant it serves
-#   Engine:    HyperQwen (syv-ai): vLLM 0.31.0 + syv-ai's patch series, syv-ai's own image
-#              ghcr.io/syv-ai/hyperqwen (commit 95ee3b64)
+#   Engine:    HyperQwen (syv-ai): vLLM 0.32.0 + syv-ai's patch series, syv-ai's own image
+#              ghcr.io/syv-ai/hyperqwen (commit f382342d)
 #   Topology:  Single card (TP=1)
 #   Drafter:   DFlash2 — syvai/Qwen3.8-27B-DFlash2-W4A16 block drafter, 7 tokens per verify
 #              (SPEC_N sets it; SPEC_N=0 turns speculation off)
@@ -50,20 +50,37 @@
 #   SPEC_N=<n>        tokens per DFlash2 verify block (DFLASH_TOKENS, default 7); 0 = no speculation
 #   REASONING_EFFORT  server-default effort for requests that send none: low (default), medium, xhigh
 #   DFLASH_TOKENS=15  upstream's setup C, for answers that quote the prompt (fewer slots, 56K)
-#   CTX=long          8-bit KV (int8 per-token-head, Triton) at 128K instead of bf16 at 64K. MEASURED
-#                     2026-10-14, same rig and 370 W, own boot: decode 128.7 / 230.9 (same within
-#                     noise), prefill 1,017 @10K (-15%) and 403 @90K. HyperQwen has no fp8 KV for
-#                     DFlash2 on sm_86 (FLASH_ATTN refuses fp8 there; our ultrafast tiers get fp8
-#                     from our FlashAttention fp8-KV plugin, which this image doesn't carry).
+#   CTX=long          8-bit KV at 128K instead of bf16 at 64K. Since commit ce9615c4 the image picks
+#                     the backend on a compute capability 8.6 card (resolve_config.sh; each line
+#                     below is what PRINT_ARGV=1 resolved on a 3090, 2026-10-28):
+#                     - default (SPEC_N unset or 7): int8 per-token-head KV on HyperQwen's
+#                       pth-flash-attn kernel, the CUSTOM backend, target and drafter (PTH_FA=1);
+#                     - any other SPEC_N, or PTH_FA=0: fp8 KV on FLASH_ATTN through the FA2 fp8-KV
+#                       plugin (FA2_FP8KV=1; AntonProkopyev/fa2-fp8kv-sm86, the plugin our
+#                       ultrafast tiers use, built from source in the image);
+#                     - PTH_FA=0 FA2_FP8KV=0: int8 per-token-head KV on Triton, what CTX=long ran
+#                       before. MEASURED on that arm 2026-10-14 (commit 95ee3b64), same rig and
+#                       370 W, own boot: decode 128.7 / 230.9 (same within noise), prefill 1,017
+#                       @10K (-15%) and 403 @90K.
+#                     The two newer arms aren't booted or measured here.
+#   PTH_FA, FA2_FP8KV CTX=long's backend, as above: 0 or 1; unset takes the image's default
+#   MAX_NUM_SEQS      requests admitted at once (HyperQwen's MAX_SEQS; unset, its profile default: 8 at
+#                     CTX=fast, fewer for the bigger setups)
+#   PTH_FA2_SLAB_PREFILL  1: long prompts prefill through FA2 over bounded BF16 slabs of the INT8 cache
+#                     (syv-ai/HyperQwen#386; upstream on a 3090: cold prefill +6.5%, +7.8% at 150K). It
+#                     engages only on the pth-flash-attn backend (CTX=long's default) with
+#                     MAX_NUM_SEQS=1, and keeps a 136 MiB workspace; 0 or unset = off. Example:
+#                     CTX=long MAX_NUM_SEQS=1 PTH_FA2_SLAB_PREFILL=1 bash scripts/switch.sh --force <this slug>
 #   GPU_UTIL          memory fraction (the launcher's GPU_MEMORY_UTILIZATION feeds it)
 #   EXTRA_ARGS        appended to vLLM's command line by HyperQwen's launcher
 # `switch.sh --set` applies only SPEC_N and REASONING_EFFORT for this slug (the catalogued launch
-# settings); a saved DFLASH_TOKENS, CTX, GPU_UTIL or EXTRA_ARGS is ignored at launch with a
-# warning (#1749). Set those for one launch instead:
+# settings); a saved DFLASH_TOKENS, CTX, PTH_FA, FA2_FP8KV, GPU_UTIL, MAX_NUM_SEQS,
+# PTH_FA2_SLAB_PREFILL or EXTRA_ARGS is ignored at launch with a warning (#1749). Set those for one
+# launch instead:
 #   CTX=long READY_TIMEOUT=1800 bash scripts/switch.sh --force vllm-hyperqwen/qwen38-27b-single-ultrafast
 services:
   vllm-hyperqwen-qwen38-27b-single:
-    image: ${VLLM_IMAGE:-ghcr.io/syv-ai/hyperqwen@sha256:e99df7e6dc73208971ae0d1f1063deb100c997308248f253174176cf0514cb9e}
+    image: ${VLLM_IMAGE:-ghcr.io/syv-ai/hyperqwen@sha256:f6baf1489229c614044be14e1efea1c6e4589414c32deaf8ed946957ad7c5ee6}
     container_name: "${ESTATE_CONTAINER:-vllm-hyperqwen-qwen38-27b-single}"
     user: "0:${DOCKER_GID:-1000}"
     restart: ${CLUB3090_RESTART:-unless-stopped}
@@ -98,11 +115,17 @@ services:
       - SPEC=${SPEC:-dflash2}
       - PREFIX_CACHE=${PREFIX_CACHE:-1}
       - CTX=${CTX:-fast}
+      # CTX=long's backend (see the knobs above). Empty is the image's own default, as unset is.
+      - PTH_FA=${PTH_FA:-}
+      - FA2_FP8KV=${FA2_FP8KV:-}
+      # Bare, so unset stays unset: HyperQwen's pthfa refuses an empty PTH_FA2_SLAB_PREFILL.
+      - PTH_FA2_SLAB_PREFILL
       - DFLASH_TOKENS=${DFLASH_TOKENS:-7}
       - GPU_UTIL=${GPU_UTIL:-${GPU_MEMORY_UTILIZATION:-0.93}}
       # Our launch knobs, mapped onto HyperQwen's names by the entrypoint below.
       - SPEC_N
       - REASONING_EFFORT
+      - MAX_NUM_SEQS
       - EXTRA_ARGS=${EXTRA_ARGS:-}
       - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all}
       - CUDA_VISIBLE_DEVICES
@@ -135,6 +158,23 @@ services:
         case "$$_reff" in low|medium|xhigh) : ;; *) echo "[reasoning] REASONING_EFFORT='$$_reff' must be low|medium|xhigh" >&2; exit 1 ;; esac
         export EXTRA_ARGS="--default-chat-template-kwargs {\"reasoning_effort\":\"$$_reff\"} $${EXTRA_ARGS}"
         echo "[reasoning] default reasoning_effort=$$_reff (a request's own effort wins)" >&2
+        # MAX_NUM_SEQS (our name, as on the vLLM composes) -> MAX_SEQS (HyperQwen's). Unset keeps its default.
+        if [ -n "$${MAX_NUM_SEQS:-}" ]; then
+          case "$$MAX_NUM_SEQS" in
+            ""|*[!0-9]*|0) echo "[seqs] MAX_NUM_SEQS='$$MAX_NUM_SEQS' must be a positive integer" >&2; exit 1 ;;
+          esac
+          export MAX_SEQS="$$MAX_NUM_SEQS"
+          echo "[seqs] MAX_SEQS=$$MAX_SEQS (MAX_NUM_SEQS)" >&2
+        fi
+        # PTH_FA2_SLAB_PREFILL (HyperQwen's own name): checked here rather than by a ValueError at model load.
+        case "$${PTH_FA2_SLAB_PREFILL-}" in
+          "") unset PTH_FA2_SLAB_PREFILL ;;    # an empty value reaches the server as unset, not as ""
+          0) : ;;
+          1) if [ "$${CTX:-fast}" != long ] || [ "$${MAX_SEQS:-}" != 1 ] || [ "$${PTH_FA:-1}" = 0 ]; then
+               echo "[prefill] PTH_FA2_SLAB_PREFILL=1 engages only with CTX=long, MAX_NUM_SEQS=1 and the pth-flash-attn backend (PTH_FA unset or 1); here it stays off" >&2
+             fi ;;
+          *) echo "[prefill] PTH_FA2_SLAB_PREFILL='$$PTH_FA2_SLAB_PREFILL' must be 0 or 1" >&2; exit 1 ;;
+        esac
         exec bash docker/entrypoint.sh single
     healthcheck:
       # The container's own hostname, not loopback, so a bad bind address can't look healthy.

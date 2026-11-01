@@ -37,6 +37,14 @@
    "applies": "never",
    "why": "an opt-in feature of the KV-offload composes"
   },
+  "ROPE_SCALING": {
+   "applies": "never",
+   "why": "an opt-in long-context extension (past a model's trained length); a slug at or under its trained context needs no scaling, and setup resolves yarn itself past it"
+  },
+  "ROPE_SCALE": {
+   "applies": "never",
+   "why": "the factor of an opt-in long-context extension; under linear/yarn with it unset the factor derives from CONTEXT, exactly as setup's own resolution"
+  },
   "KV_OFFLOAD_DISK_GB": {
    "applies": "never",
    "why": "an opt-in feature of the KV-offload composes"
@@ -196,6 +204,24 @@
    "source": {
     "file": "docs/engines/STRATA_MAYA.md",
     "contains": "Maya's `--spec` is documented for its DFlash2 drafter"
+   }
+  },
+  {
+   "knobs": [
+    "THINKING_BUDGET_LOW",
+    "THINKING_BUDGET_MEDIUM",
+    "THINKING_BUDGET_XHIGH",
+    "THINKING_BUDGETS"
+   ],
+   "match": {
+    "engine": [
+     "qengine"
+    ]
+   },
+   "why": "QEngine has no reasoning budget of any kind: its server takes enable_thinking and reasoning_effort for the template, and no flag, variable or request field caps the thinking",
+   "source": {
+    "file": "docs/engines/QENGINE.md",
+    "contains": "QEngine has no thinking budget"
    }
   }
  ],
@@ -427,6 +453,21 @@
    }
   },
   {
+   "compose": "models/qwen3.8-27b/llama-cpp/compose/single/ukisai-swift15-gsq-rco-iq3s-mtp/base.yml",
+   "knobs": [
+    "THINKING_BUDGETS",
+    "THINKING_BUDGET_LOW",
+    "THINKING_BUDGET_MEDIUM",
+    "THINKING_BUDGET_XHIGH"
+   ],
+   "reads_instead": {
+    "THINKING_BUDGETS": "REASONING_BUDGET",
+    "THINKING_BUDGET_LOW": "REASONING_BUDGET",
+    "THINKING_BUDGET_MEDIUM": "REASONING_BUDGET",
+    "THINKING_BUDGET_XHIGH": "REASONING_BUDGET"
+   }
+  },
+  {
    "compose": "models/qwen3.8-27b/llama-cpp/compose/single/unsloth-iq4xs/q4kv-vision.yml",
    "knobs": [
     "THINKING_BUDGETS",
@@ -544,5 +585,5 @@
    ]
   }
  ],
- "not_wired_ceiling": 96
+ "not_wired_ceiling": 100
 }

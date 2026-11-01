@@ -92,6 +92,15 @@ if [[ -f "${ROOT_DIR}/scripts/lib/registry-lookup.sh" ]]; then
   REGISTRY_LOOKUP_ROOT="${ROOT_DIR}"
   _DEFAULT_ENDPOINT_PORT="$(registry_lookup_default_port qwen3.6-27b 2>/dev/null || true)"
 fi
+# CONTAINER= with no URL=: the URL is that container's own port (#1584), as preflight's autodetect
+# gives the other serving scripts. This used to fall back to the default port below, so a probe
+# told CONTAINER=<another slug> measured whatever answered on that port, or nothing.
+if [[ -z "${URL:-}" && -n "${CONTAINER:-}" && "${CONTAINER}" != none ]]; then
+  # shellcheck source=lib/club-containers.sh
+  source "${ROOT_DIR}/scripts/lib/club-containers.sh"
+  URL="$(club_url_for_container "$CONTAINER")"
+  if [[ -n "$URL" ]]; then echo "[concurrency-probe] URL=${URL} (the port ${CONTAINER} publishes; set URL= to choose)" >&2; fi
+fi
 URL="${URL:-http://localhost:${_DEFAULT_ENDPOINT_PORT:-8020}}"
 PROMPT_TOKENS="${PROMPT_TOKENS:-16000}"
 GEN_TOKENS="${GEN_TOKENS:-256}"
@@ -193,8 +202,6 @@ fi
 # Remember whether the caller pinned MODEL — SWEEP re-resolves after each boot
 # and must not clobber an explicit pin.
 MODEL_PINNED="${MODEL:+1}"
-MODEL="${MODEL:-$(curl -s -m 5 "${URL}/v1/models" 2>/dev/null \
-  | python3 -c 'import json,sys;print(json.load(sys.stdin)["data"][0]["id"])' 2>/dev/null || echo qwen3.6-27b)}"
 # Container for VRAM, GPU label, slot count and flag introspection: the one that publishes URL on
 # THIS host through an engine port — club_container_for_url, the answer preflight's autodetect
 # and soak-test.sh use too (#1584). #1537 had replaced a `vllm-(qwen|gemma)` name heuristic with a
@@ -213,6 +220,14 @@ if [[ "${CONTAINER:-}" == "none" ]]; then
 elif [[ -z "${CONTAINER:-}" ]]; then
   CONTAINER="$(club_container_for_url "$URL")"
 fi
+# The engine's API key (Strata 0.2+), read back from the container (scripts/lib/engine-auth.sh) —
+# resolved BEFORE the model probe below, which needs it. Exports CLUB_ENGINE_API_KEY for the
+# python helper and wraps this shell's curl.
+# shellcheck source=lib/engine-auth.sh
+source "${ROOT_DIR}/scripts/lib/engine-auth.sh"
+club_engine_auth_enable "${CONTAINER:-}"
+MODEL="${MODEL:-$(curl -s -m 5 "${URL}/v1/models" 2>/dev/null \
+  | python3 -c 'import json,sys;print(json.load(sys.stdin)["data"][0]["id"])' 2>/dev/null || echo qwen3.6-27b)}"
 # A remote endpoint: no local container AND the URL is not this machine. This rig's GPUs are then
 # not the server's, so their VRAM and names must not land on its card — they used to, as
 # "2× GeForce RTX 3090" and a VRAM curve of whatever this host happened to be doing. A host-process
@@ -446,8 +461,13 @@ if [[ "$MATRIX" == "1" ]]; then
       echo "[concurrency-probe] WARNING: server has ${slots} slot(s) (${slots_src}) but N goes up to ${_max_n}." >&2
       echo "[concurrency-probe]   Streams beyond ${slots} QUEUE rather than batch — the curve above N=${slots}" >&2
       echo "[concurrency-probe]   measures queuing, NOT concurrency." >&2
-      echo "[concurrency-probe]   Fix: reboot the compose with NPARALLEL=${_max_n}. Note -np splits -c into" >&2
-      echo "[concurrency-probe]   ctx/N per slot, so pool and compute buffer change — re-measure, do not reuse rows." >&2
+      if [[ "${slots_src:-}" == "container log (QEngine)" ]]; then   # its slot knob is per model (#1846)
+        echo "[concurrency-probe]   Fix: restart with more slots: QE_MAX_SEQS (27B, up to 32) or FLASH_MAX_SEQS" >&2
+        echo "[concurrency-probe]   (Flash-Next, 1-16). Slots share VRAM with the KV pool and expert cache — re-measure." >&2
+      else
+        echo "[concurrency-probe]   Fix: reboot the compose with NPARALLEL=${_max_n}. Note -np splits -c into" >&2
+        echo "[concurrency-probe]   ctx/N per slot, so pool and compute buffer change — re-measure, do not reuse rows." >&2
+      fi
     fi
   fi
 

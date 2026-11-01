@@ -67,7 +67,7 @@ END = "  # <<< club-3090 local models <<<"
 # The FP8 tiers also serve a `-fp8` alias, and the gateway lists every alias as its
 # own route, so each needs the override too. test-omp-setup checks this list
 # against every name the Qwen3.8-family composes serve.
-QWEN38_IDS = ["qwen3.8-27b", "qwen3.8-27b-fp8", "thinkingcap38-27b", "thinkingcap38-27b-fp8"]
+QWEN38_IDS = ["qwen3.8-27b", "qwen3.8-27b-fp8", "qwen3.8-27b-swift15", "thinkingcap38-27b", "thinkingcap38-27b-fp8"]
 
 def qwen38_override(mid: str, no_summary: bool = False) -> str:
     return f"""      {mid}:
@@ -103,7 +103,7 @@ def qwen38_override(mid: str, no_summary: bool = False) -> str:
 # profile for the gateway to report, so it sent NO effort at all and every request
 # ran at the server's default, the slowest rung (club-3090 Discussion #1690).
 # These are the ids the engines REPORT, which is what the gateway names each route:
-# a compose's --served-model-name / --alias / --model-name / SERVED_MODEL_NAME,
+# a compose's --served-model-name / --alias / --model-name / SERVED_MODEL_NAME / --served-name (QEngine),
 # Strata's "<family name>-<quant>" (qwen3.8-flash-next-iq3_s, swift-1.5-iq3_s) and
 # Project Maya's model_name (glm-5.3-flash). test-omp-setup checks both lists
 # against the composes.

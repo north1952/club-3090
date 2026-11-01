@@ -184,6 +184,26 @@ cap_server_pid_source() {
   esac
 }
 
+# cap_owned_by [url] — cached /v1/models data[0].owned_by: what the server calls itself ("qengine",
+# "llamacpp", "vllm", ...), empty when it says nothing. The family of a host-run server, which has no
+# container to name it (scripts/lib/engine-kind.sh maps it).
+CAP_OWNED_BY=""
+CAP_OWNED_BY_TRIED=0
+cap_owned_by() {
+  local url="${1:-${URL:-}}"
+  if (( CAP_OWNED_BY_TRIED )); then printf '%s' "$CAP_OWNED_BY"; [[ -n "$CAP_OWNED_BY" ]]; return; fi
+  CAP_OWNED_BY_TRIED=1
+  [[ -n "$url" ]] || return 1
+  CAP_OWNED_BY="$(curl -sf -m 5 "${url}/v1/models" 2>/dev/null | python3 -c '
+import json, sys
+try:
+    print(((json.load(sys.stdin).get("data") or [{}])[0] or {}).get("owned_by", "") or "")
+except Exception:
+    pass' 2>/dev/null || true)"
+  [[ -n "$CAP_OWNED_BY" ]] || return 1
+  printf '%s' "$CAP_OWNED_BY"
+}
+
 # cap_init [tmpdir] — resolve everything the later captures depend on.
 # Safe to call more than once. Never fails the caller.
 cap_init() {
@@ -325,12 +345,35 @@ sys.stdout.write(str(cur))
 # ---------------------------------------------------------------------------
 # Order of authority: argv (what was actually asked for) > /props > boot log.
 # Prints "<type> (source: <where>)"; returns 1 and notes unavailability if none
-# of the three can answer.
+# of the three can answer. $2 is the engine family the caller resolved (bench.sh's
+# ENGINE_KIND); unknown or absent, it comes from what the server calls itself.
 cap_kv_type() {
-  local argv="${1:-}" v
+  local argv="${1:-}" kind="${2:-unknown}" v
+  if [[ -z "$kind" || "$kind" == unknown ]]; then
+    # shellcheck source=engine-kind.sh
+    declare -F engine_kind_from_owned_by >/dev/null || source "$(dirname "${BASH_SOURCE[0]}")/engine-kind.sh"
+    kind="$(engine_kind_from_owned_by "$(cap_owned_by || true)")"
+  fi
   if [[ -n "$argv" ]]; then
     v="$(cap_argv_flag "$argv" -ct -ctk -ctv --cache-type-k --cache-type-v --kv-cache-dtype || true)"
     [[ -n "$v" ]] && { echo "$v (source: argv)"; return 0; }
+  fi
+  # QEngine has one KV format and no flag for it. Its /props (from 1.3.1) is llama.cpp-shaped but
+  # carries no cache type, so without this the llama.cpp default below answered "f16".
+  if [[ "$kind" == qengine ]]; then echo "fp8_e4m3 (QEngine's only KV format)"; return 0; fi
+  # Strata: the port belongs to its Python server, and the KV belongs to the engine it starts as a
+  # child (`strata --serve ... --kv int8 --kv-resident 32768`), so neither the argv above nor /props
+  # carries it. Read the child's own command line in the container, as llamacpp_spec_args does
+  # for llama-server. Until this, every Strata bench said "KV cache type unavailable" (#1878).
+  if [[ "$kind" == strata && -n "${CONTAINER:-}" && "$CONTAINER" != none ]] && cap_have docker; then
+    local eargs res
+    # pid,args, not args alone: docker top refuses a ps format without a PID column
+    eargs="$(docker top "$CONTAINER" -eo pid,args 2>/dev/null | command grep -E -- '(^| )--kv [^ ]' | head -1 || true)"
+    if v="$(cap_argv_flag "$eargs" --kv)"; then
+      res="$(cap_argv_flag "$eargs" --kv-resident || true)"
+      echo "${v}${res:+, ${res} cells in VRAM (--kv-resident)} (source: Strata engine argv)"
+      return 0
+    fi
   fi
   v="$(cap_props_get "default_generation_settings.params.cache_type_k" || true)"
   [[ -n "$v" ]] && { echo "$v (source: /props)"; return 0; }
@@ -356,8 +399,11 @@ cap_kv_type() {
   # ENGINE DEFAULT is f16, and "f16 (engine default)" is a fact the reader can act
   # on where "unavailable" is not. Only inferred when the family is identified —
   # /props answering, or llama.cpp markers in the log. Anything else stays honestly
-  # unavailable rather than guessing another engine's default.
-  if [[ -n "$argv" ]] || [[ -n "$CAP_LOG" ]]; then
+  # unavailable rather than guessing another engine's default. /props alone doesn't identify it:
+  # TabbyAPI, Strata and QEngine serve a llama.cpp-style one too, so a family that names another
+  # engine skips this.
+  if [[ -z "$kind" || "$kind" == unknown || "$kind" == llamacpp ]] \
+     && { [[ -n "$argv" ]] || [[ -n "$CAP_LOG" ]]; }; then
     if cap_props_json >/dev/null 2>&1 \
        || { [[ -r "${CAP_LOG:-/dev/null}" ]] \
             && command grep -qE 'llama_context:|llama_model_loader:|llama_kv_cache' "$CAP_LOG" 2>/dev/null; }; then
@@ -1156,13 +1202,42 @@ cap_ram_status() {
     }' /proc/meminfo
 }
 
-# cap_swap_verdict [pid] — PASS/FAIL for the integrity panel.
+# Pages SITTING in swap are not pages being SWAPPED IN (#1846): a server that barely fits its host
+# keeps a few hundred MB of cold pages in swap for good (~400 MB of ~86 GB on a 91.9 GB host, ~50
+# swap-ins a request, the numbers unaffected), while a host that is paging (#1827: 1.5 GB of the
+# server in swap, decode -11%) swaps them back in all the time. So the run's verdict counts the host's
+# swap-ins (/proc/vmstat pswpin) between cap_swapin_mark, at the start, and the verdict, at the end.
+# CAP_PROC_STATUS / CAP_VMSTAT stand in for /proc/<pid>/status and /proc/vmstat (the tests' seam).
+cap_swapin_pages() { awk '/^pswpin /{print $2}' "${CAP_VMSTAT:-/proc/vmstat}" 2>/dev/null; }
+cap_swapin_mark() {
+  local n; n="$(cap_swapin_pages)"
+  [[ -n "$n" && -n "${CAP_WORK:-}" ]] && echo "$n" > "$CAP_WORK/pswpin0"
+  return 0
+}
+
+# cap_swap_verdict [pid] [start] — PASS / WARN / FAIL for the integrity panel. With `start` (the run's
+# first line, before cap_swapin_mark) it states what is in swap and leaves the judging to the end.
 cap_swap_verdict() {
-  local pid="${1:-$CAP_PID}"
-  if [[ -n "$pid" && -r "/proc/$pid/status" ]]; then
-    local vmswap
-    vmswap="$(command grep -m1 '^VmSwap:' "/proc/$pid/status" 2>/dev/null | awk '{print $2+0}')"
+  local pid="${1:-$CAP_PID}" phase="${2:-}"
+  local status="${CAP_PROC_STATUS:-/proc/$pid/status}"
+  if [[ -n "$pid" && -r "$status" ]]; then
+    local vmswap p0 p1 mb lim="${SWAP_IN_FAIL_MB:-64}"
+    vmswap="$(command grep -m1 '^VmSwap:' "$status" 2>/dev/null | awk '{print $2+0}')"
     if [[ -n "$vmswap" ]] && (( vmswap > 0 )); then
+      if [[ "$phase" == "start" ]]; then
+        echo "${vmswap} kB of the SERVING PROCESS is in swap; the end of the run judges it by what is swapped back in"
+        return 0
+      fi
+      p0="$(cat "${CAP_WORK:-/nonexistent}/pswpin0" 2>/dev/null || true)"; p1="$(cap_swapin_pages)"
+      if [[ "$p0" =~ ^[0-9]+$ && "$p1" =~ ^[0-9]+$ ]]; then
+        mb=$(( (p1 - p0) * $(getconf PAGESIZE 2>/dev/null || echo 4096) / 1000000 ))
+        if (( mb <= lim )); then
+          echo "WARN — ${vmswap} kB of the SERVING PROCESS sits in swap, but the host swapped in only ${mb} MB during the run (limit ${lim} MB, SWAP_IN_FAIL_MB): cold pages, not paging"
+        else
+          echo "FAIL — ${vmswap} kB of the SERVING PROCESS is in swap and the host swapped in ${mb} MB during the run: it was paging; every number in this run is suspect"
+        fi
+        return 0
+      fi
       echo "FAIL — ${vmswap} kB of the SERVING PROCESS is paged out to swap; every number in this run is suspect"
       return 0
     fi
@@ -1404,4 +1479,45 @@ cap_divergence_pct() {
     m = a > b ? a : b
     printf "%.1f\n", d * 100 / m
   }'
+}
+
+# cap_decode_crosscheck <summary.json> — the client-vs-engine decode cross-check, one line per
+# shape, then the >5% WARN when any shape exceeds it (#1862). It compares the SAME requests on
+# both sides: each shape's measured runs (bench.sh's `decode_runs`) against the engine's
+# timings between the log positions bench.sh recorded around them (`log_lines`). The whole-run
+# scrape pools every request in its window: warm-ups, both shapes and the prefill probes' short
+# decodes at depth. Its median against the mean of the shapes' means read 163.72 vs 184.72
+# (11.4%) on a healthy QEngine run whose code decodes ~35% faster than its prose. Medians on
+# both sides, and the client keeps only runs at or over CAP_MIN_DECODE_TOKENS, the floor the
+# engine scrape applies. Prints nothing when no shape has a window with engine timings in it.
+cap_decode_crosscheck() {
+  local summary="$1" xs xa xb xcli xn xeng eng en div max=""
+  [[ -r "$summary" ]] || return 0
+  while IFS='|' read -r xs xa xb xcli xn; do
+    [[ -n "$xs" ]] || continue
+    xeng="$(CAP_LINE_OFFSET="$xa" CAP_LINE_LIMIT="$(( xb - xa ))" cap_moe_parse timings 2>/dev/null \
+      | command grep -m1 '^decode ' || true)"
+    eng="$(printf '%s\n' "$xeng" | command grep -oE 'median=[0-9.]+' | cut -d= -f2 || true)"
+    en="$(printf '%s\n' "$xeng" | command grep -oE ' n=[0-9]+' | cut -d= -f2 || true)"
+    [[ -n "$eng" && "${en:-0}" -gt 0 ]] || continue
+    div="$(cap_divergence_pct "$eng" "$xcli" || true)"
+    [[ -n "$div" ]] || continue
+    echo "  cross-check: client-observed ${xcli} vs engine-side ${eng} tok/s -> ${div}% divergence (${xs}: medians over its ${xn} measured runs; engine n=${en})"
+    max="$(awk -v a="${max:-0}" -v b="$div" 'BEGIN{ print (b+0 > a+0 ? b : a) }')"
+  done < <(python3 -c '
+import json, statistics, sys
+try:
+    d = json.load(open(sys.argv[1], encoding="utf-8"))
+except Exception:
+    sys.exit(0)
+floor = int(sys.argv[2] or 0)
+for name, v in d.get("shapes", {}).items():
+    a, b = (v.get("log_lines") or [None, None])[:2]
+    runs = [r for r in v.get("decode_runs") or [] if len(r) == 2 and r[1] >= floor]
+    if v.get("decode_derived") or not runs or a is None or b is None or b <= a:
+        continue
+    print(f"{name}|{a}|{b}|{statistics.median(r[0] for r in runs):.2f}|{len(runs)}")
+' "$summary" "${CAP_MIN_DECODE_TOKENS:-0}" 2>/dev/null)
+  [[ -n "$max" ]] && awk -v d="$max" 'BEGIN{ if (d+0 > 5) print "  ⚠ WARN: >5% divergence. One of these two is not measuring what its label\n          says. State WHICH number a card quotes, and why." }'
+  return 0
 }
